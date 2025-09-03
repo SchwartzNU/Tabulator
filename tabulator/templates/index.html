@@ -1,0 +1,38 @@
+{% extends 'base.html' %}
+{% block content %}
+  <section class="panel">
+    <h2>Upload Data Table</h2>
+    <p>Accepted formats: .csv, .h5, .pkl/.pickle, .mat</p>
+    <form id="uploadForm" action="{{ url_for('main.upload') }}" method="post" enctype="multipart/form-data">
+      <input type="file" id="datafile" name="datafile" accept=".csv,.h5,.pkl,.pickle,.mat" />
+      <button type="submit">Upload</button>
+    </form>
+  </section>
+
+  {% if dataset_id and info %}
+  <section id="preview" class="panel" style="margin-top:16px;">
+    <h2>Current Dataset</h2>
+    <p>
+      <strong>ID:</strong> {{ dataset_id }}<br />
+      <strong>Shape:</strong> {{ info.rows }} rows × {{ info.cols }} cols<br />
+      <strong>Columns:</strong> {{ ", ".join(info.columns) }}
+    </p>
+    {% if preview_html %}
+      <div class="table-preview">{{ preview_html | safe }}</div>
+    {% endif %}
+    {% if units_preview %}
+      <h3>Units (sample)</h3>
+      <div class="table-preview">
+        <table>
+          <thead><tr><th>Variable</th><th>Unit</th></tr></thead>
+          <tbody>
+            {% for k, u in units_preview %}
+              <tr><td>{{ k }}</td><td>{{ u }}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endif %}
+  </section>
+  {% endif %}
+{% endblock %}

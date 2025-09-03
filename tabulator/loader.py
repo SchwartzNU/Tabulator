@@ -1,0 +1,213 @@
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from typing import Any, Dict, Optional
+
+import numpy as np
+import pandas as pd
+from scipy.io import loadmat
+import h5py
+
+
+class LoadError(Exception):
+    pass
+
+
+@dataclass
+class DataSet:
+    df: pd.DataFrame
+    units: Dict[str, str]
+
+
+def load_dataset(path: str) -> DataSet:
+    ext = os.path.splitext(path)[1].lower().lstrip(".")
+    if ext == "csv":
+        return _load_csv_formatted(path)
+    if ext in {"pkl", "pickle"}:
+        return _load_pickle_formatted(path)
+    if ext == "h5":
+        return _load_h5_formatted(path)
+    if ext == "mat":
+        return _load_mat_formatted(path)
+    raise LoadError(f"Unsupported extension: .{ext}")
+
+
+# Backward-compatible alias (if any caller still imports load_table)
+load_table = load_dataset
+
+
+def _load_csv_formatted(path: str) -> DataSet:
+    try:
+        raw = pd.read_csv(path, header=None)
+        if raw.shape[0] < 2:
+            raise LoadError("CSV must have at least two rows (header + units)")
+        header = raw.iloc[0].astype(str).tolist()
+        units_row = raw.iloc[1].astype(str).fillna("").tolist()
+        df = raw.iloc[2:].reset_index(drop=True)
+        df.columns = header
+        # Convert numeric columns where possible
+        for col in df.columns:
+            if col == "segmentID":
+                continue
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        # Build units mapping
+        units = {h: (u if u != "nan" else "") for h, u in zip(header, units_row)}
+        units.setdefault("segmentID", "")
+        return DataSet(df=df, units=units)
+    except Exception as e:
+        raise LoadError(f"Failed to read formatted CSV: {e}") from e
+
+
+def _load_pickle_formatted(path: str) -> DataSet:
+    try:
+        obj = pd.read_pickle(path)
+    except Exception as e:
+        raise LoadError(f"Failed to read pickle: {e}") from e
+
+    if isinstance(obj, dict) and "table" in obj:
+        df = obj["table"]
+        units_df = obj.get("units")
+        units: Dict[str, str] = {}
+        if isinstance(units_df, pd.DataFrame) and {"variable", "unit"}.issubset(units_df.columns):
+            units = {str(row["variable"]): str(row["unit"]) for _, row in units_df.iterrows()}
+        units.setdefault("segmentID", "")
+        if not isinstance(df, pd.DataFrame):
+            raise LoadError("Pickle 'table' is not a DataFrame")
+        return DataSet(df=df, units=units)
+
+    # Fallback: treat as a DataFrame or Series
+    if isinstance(obj, pd.DataFrame):
+        return DataSet(df=obj, units={c: "" for c in obj.columns})
+    if isinstance(obj, pd.Series):
+        df = obj.to_frame()
+        return DataSet(df=df, units={c: "" for c in df.columns})
+    raise LoadError("Pickle did not contain expected dict with 'table' and 'units'")
+
+
+def _load_h5_formatted(path: str) -> DataSet:
+    try:
+        with h5py.File(path, "r") as f:
+            # Units group
+            if "/units" not in f:
+                raise LoadError("Missing /units group in HDF5 file")
+            units_group = f["/units"]
+            units: Dict[str, str] = {}
+            for k in units_group.keys():
+                v = units_group[k][()]
+                if isinstance(v, (bytes, bytearray)):
+                    v = v.decode("utf-8", errors="ignore")
+                elif isinstance(v, np.ndarray) and v.dtype.kind in {"S", "U"} and v.size == 1:
+                    v = v.astype(str).item()
+                units[str(k)] = str(v)
+            # Rows: one group per segment, e.g. /segid_<ID>
+            rows = []
+            stat_keys = [k for k in units.keys()]
+            for gname, grp in f.items():
+                # top-level groups include units and segid_* groups
+                base = gname.split("/")[-1]
+                if base in {"units", "stat_keys"}:
+                    continue
+                if not isinstance(grp, h5py.Group):
+                    continue
+                # Derive segmentID from group name if not stored as dataset
+                seg_name = base
+                seg_id = seg_name.replace("segid_", "")
+                row: Dict[str, Any] = {"segmentID": seg_id}
+                for k in stat_keys:
+                    if k == "segmentID":
+                        # If present as dataset, prefer it
+                        if "segmentID" in grp:
+                            row["segmentID"] = _h5_read_scalar(grp["segmentID"])  # type: ignore
+                        continue
+                    if k in grp:
+                        row[k] = _h5_read_scalar(grp[k])  # type: ignore
+                    else:
+                        row[k] = np.nan
+                rows.append(row)
+        df = pd.DataFrame(rows)
+        # Ensure numeric columns where possible (except segmentID)
+        for col in df.columns:
+            if col == "segmentID":
+                continue
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        units.setdefault("segmentID", "")
+        return DataSet(df=df, units=units)
+    except Exception as e:
+        raise LoadError(f"Failed to read formatted HDF5: {e}") from e
+
+
+def _h5_read_scalar(dset: h5py.Dataset) -> Any:
+    v = dset[()]
+    if isinstance(v, (bytes, bytearray)):
+        return v.decode("utf-8", errors="ignore")
+    if isinstance(v, np.ndarray) and v.size == 1:
+        return v.reshape(()).tolist()
+    return v
+
+
+def _load_mat_formatted(path: str) -> DataSet:
+    try:
+        data = loadmat(path, squeeze_me=True, struct_as_record=False)
+    except Exception as e:
+        raise LoadError(f"Failed to read MAT file: {e}") from e
+
+    if "S" not in data or "Units" not in data:
+        raise LoadError("MAT file must contain variables 'S' and 'Units'")
+
+    S = data["S"]
+    Units = data["Units"]
+
+    # Convert Units struct to dict
+    units: Dict[str, str] = _mat_units_to_dict(Units)
+
+    # Convert struct array S to DataFrame
+    rows = _mat_struct_array_to_rows(S)
+    if not rows:
+        raise LoadError("MAT 'S' contained no rows")
+    df = pd.DataFrame(rows)
+    # Coerce numeric columns
+    for col in df.columns:
+        if col == "segmentID":
+            continue
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    units.setdefault("segmentID", "")
+    return DataSet(df=df, units=units)
+
+
+def _mat_units_to_dict(Units: Any) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    # Units is typically a struct with attributes per field
+    if hasattr(Units, "_fieldnames"):
+        for name in Units._fieldnames:
+            v = getattr(Units, name)
+            if isinstance(v, np.ndarray) and v.size == 1:
+                v = v.reshape(()).tolist()
+            out[str(name)] = str(v if v is not None else "")
+        return out
+    # Fallback: try dict-like
+    if isinstance(Units, dict):
+        return {str(k): str(v) for k, v in Units.items()}
+    return out
+
+
+def _mat_struct_array_to_rows(S: Any) -> list[Dict[str, Any]]:
+    rows: list[Dict[str, Any]] = []
+    # S can be an object array of MATLAB structs; each element has _fieldnames
+    if isinstance(S, np.ndarray):
+        # Ensure we iterate elements (even if scalar)
+        it = S.flat
+        for elem in it:
+            row: Dict[str, Any] = {}
+            if hasattr(elem, "_fieldnames"):
+                for name in elem._fieldnames:
+                    v = getattr(elem, name)
+                    # Coerce scalars and 1x1 arrays
+                    if isinstance(v, np.ndarray) and v.size == 1:
+                        v = v.reshape(()).tolist()
+                    # Non-numeric entries are saved as NaN per export notes
+                    if isinstance(v, (str, bytes, bytearray)):
+                        v = float("nan")
+                    row[str(name)] = v
+                rows.append(row)
+    return rows
