@@ -35,12 +35,43 @@ html, body {
   padding: 0 16px;
 }
 
-.panel {
+/* Cards */
+.cards { display: grid; gap: 14px; }
+.card {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 18px;
 }
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.card-title {
+  margin: 0;
+  font-weight: 600;
+}
+.card-actions { display: flex; gap: 8px; }
+.card-body { padding: 14px; }
+
+/* Collapsible */
+.card-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  color: var(--text);
+  border: none;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+}
+.chevron { transition: transform 0.15s ease; }
+.card.collapsed .card-body { display: none; }
+.card.collapsed .chevron { transform: rotate(-90deg); }
 
 .panel h2 {
   margin-top: 0;
@@ -54,6 +85,10 @@ button {
   padding: 10px 14px;
   font-weight: 600;
   cursor: pointer;
+}
+button.secondary {
+  background: #e5e7eb;
+  color: #111827;
 }
 
 input[type="file"] {
@@ -88,4 +123,17 @@ input[type="file"] {
 }
 .table-preview th {
   background: #f9fafb;
+}
+
+/* Forms */
+.form-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+label { font-weight: 600; }
+select { padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: #fff; color: var(--text); }
+input[type="number"], input[type="text"] {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  width: 120px;
 }

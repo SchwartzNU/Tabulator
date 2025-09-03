@@ -1,38 +1,73 @@
 {% extends 'base.html' %}
 {% block content %}
-  <section class="panel">
-    <h2>Upload Data Table</h2>
-    <p>Accepted formats: .csv, .h5, .pkl/.pickle, .mat</p>
-    <form id="uploadForm" action="{{ url_for('main.upload') }}" method="post" enctype="multipart/form-data">
-      <input type="file" id="datafile" name="datafile" accept=".csv,.h5,.pkl,.pickle,.mat" />
-      <button type="submit">Upload</button>
-    </form>
-  </section>
-
-  {% if dataset_id and info %}
-  <section id="preview" class="panel" style="margin-top:16px;">
-    <h2>Current Dataset</h2>
-    <p>
-      <strong>ID:</strong> {{ dataset_id }}<br />
-      <strong>Shape:</strong> {{ info.rows }} rows × {{ info.cols }} cols<br />
-      <strong>Columns:</strong> {{ ", ".join(info.columns) }}
-    </p>
-    {% if preview_html %}
-      <div class="table-preview">{{ preview_html | safe }}</div>
-    {% endif %}
-    {% if units_preview %}
-      <h3>Units (sample)</h3>
-      <div class="table-preview">
-        <table>
-          <thead><tr><th>Variable</th><th>Unit</th></tr></thead>
-          <tbody>
-            {% for k, u in units_preview %}
-              <tr><td>{{ k }}</td><td>{{ u }}</td></tr>
-            {% endfor %}
-          </tbody>
-        </table>
+  <div class="cards">
+    <!-- Upload Card -->
+    <section class="card" id="upload-card">
+      <div class="card-header">
+        <button class="card-toggle" aria-expanded="true" aria-controls="upload-body">
+          <span class="chevron">▾</span>
+          <span class="card-title">Upload Data Table</span>
+        </button>
       </div>
+      <div class="card-body" id="upload-body">
+        <p>Accepted formats: .csv, .h5, .pkl/.pickle, .mat</p>
+        <form id="uploadForm" action="{{ url_for('main.upload') }}" method="post" enctype="multipart/form-data">
+          <input type="file" id="datafile" name="datafile" accept=".csv,.h5,.pkl,.pickle,.mat" />
+          <button type="submit">Upload</button>
+        </form>
+      </div>
+    </section>
+
+    {% if dataset_id and info %}
+    <!-- Current Dataset Card -->
+    <section class="card" id="dataset-card">
+      <div class="card-header">
+        <button class="card-toggle" aria-expanded="true" aria-controls="dataset-body">
+          <span class="chevron">▾</span>
+          <span class="card-title">Current Dataset</span>
+        </button>
+      </div>
+      <div class="card-body" id="dataset-body">
+        <p>
+          <strong>ID:</strong> {{ dataset_id }}<br />
+          <strong>Shape:</strong> {{ info.rows }} rows × {{ info.cols }} cols<br />
+          <strong>Columns:</strong> {{ ", ".join(info.columns) }}
+        </p>
+        {% if preview_html %}
+          <div class="table-preview">{{ preview_html | safe }}</div>
+          <div class="muted" style="margin-top:6px; color: var(--muted);">Showing first 10 rows …</div>
+        {% endif %}
+        {% if units_items %}
+          <h3>Units</h3>
+          <div class="table-preview">
+            <table>
+              <thead><tr><th>Variable</th><th>Unit</th></tr></thead>
+              <tbody>
+                {% for k, u in units_items %}
+                  <tr><td>{{ k }}</td><td>{{ u }}</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% endif %}
+      </div>
+    </section>
     {% endif %}
-  </section>
-  {% endif %}
+
+    <!-- Plots Card (container with Add Plot) -->
+    <section class="card" id="plots-card">
+      <div class="card-header">
+        <button class="card-toggle" aria-expanded="true" aria-controls="plots-body">
+          <span class="chevron">▾</span>
+          <span class="card-title">Plots</span>
+        </button>
+        <div class="card-actions">
+          <button id="add-plot-btn" type="button">Add Plot</button>
+        </div>
+      </div>
+      <div class="card-body" id="plots-body">
+        <div id="plots-container" class="cards"></div>
+      </div>
+    </section>
+  </div>
 {% endblock %}

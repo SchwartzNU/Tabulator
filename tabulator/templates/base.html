@@ -22,6 +22,8 @@
       {% endwith %}
       {% block content %}{% endblock %}
     </main>
+    <!-- Plotly for robust plotting -->
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <script src="{{ url_for('static', filename='main.js') }}"></script>
   </body>
   </html>
-
