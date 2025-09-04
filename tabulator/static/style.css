@@ -185,3 +185,5 @@ label.toggle input[type="checkbox"] { margin: 0; }
 
 /* Collapsible preview section */
 .preview-details > summary { cursor: pointer; color: var(--muted); margin: 6px 0; }
+/* Collapsible units section */
+.units-details > summary { cursor: pointer; color: var(--muted); margin: 6px 0; }

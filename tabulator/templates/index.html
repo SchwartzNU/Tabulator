@@ -47,17 +47,19 @@
           </details>
         {% endif %}
         {% if units_items %}
-          <h3>Units</h3>
-          <div class="table-preview units-table-wrap">
-            <table>
-              <thead><tr><th>Variable</th><th>Unit</th></tr></thead>
-              <tbody>
-                {% for k, u in units_items %}
-                  <tr><td>{{ k }}</td><td>{{ u }}</td></tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          </div>
+          <details class="units-details">
+            <summary>Units</summary>
+            <div class="table-preview units-table-wrap">
+              <table>
+                <thead><tr><th>Variable</th><th>Unit</th></tr></thead>
+                <tbody>
+                  {% for k, u in units_items %}
+                    <tr><td>{{ k }}</td><td>{{ u }}</td></tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </details>
         {% endif %}
       </div>
     </section>
