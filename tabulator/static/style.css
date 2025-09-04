@@ -120,11 +120,16 @@ input[type="file"] {
 .table-preview { overflow-x: auto; }
 .table-preview th, .table-preview td {
   border: 1px solid var(--border);
-  padding: 6px 8px;
+  padding: 4px 6px;
   text-align: left;
 }
 .table-preview th {
   background: #f9fafb;
+}
+/* Slightly smaller font within previews to reduce height */
+.table-preview { font-size: 12px; }
+@media (max-width: 640px) {
+  .table-preview { font-size: 11px; }
 }
 
 /* Forms */
@@ -139,6 +144,10 @@ input[type="number"], input[type="text"] {
   color: var(--text);
   width: 120px;
 }
+
+/* Keep checkbox with its label text */
+label.toggle { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+label.toggle input[type="checkbox"] { margin: 0; }
 
 /* Plot container: allow Plotly to size responsively without clipping */
 .plot-card .plot-preview { width: 100%; overflow-x: auto; }
@@ -167,3 +176,12 @@ input[type="number"], input[type="text"] {
   text-overflow: ellipsis;
 }
 .units-table-wrap { max-height: 260px; overflow: auto; }
+
+/* Details toggle for columns list */
+.columns-details > summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+/* Collapsible preview section */
+.preview-details > summary { cursor: pointer; color: var(--muted); margin: 6px 0; }

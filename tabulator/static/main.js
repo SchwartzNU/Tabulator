@@ -158,10 +158,8 @@
           <option value="sd">SD</option>
           <option value="sem">SEM</option>
         </select>
-        <label for="${logxId}">Log X</label>
-        <input id="${logxId}" type="checkbox" />
-        <label for="${logyId}">Log Y</label>
-        <input id="${logyId}" type="checkbox" />
+        <label class="toggle"><input id="${logxId}" type="checkbox" /> Log X</label>
+        <label class="toggle"><input id="${logyId}" type="checkbox" /> Log Y</label>
       </div>
       <div class="form-row" style="margin-top:8px;">
         <label for="${xminId}">X min</label>
@@ -432,8 +430,7 @@
           <option value="sd">SD</option>
           <option value="sem">SEM</option>
         </select>
-        <label for="${logId}">Log scale</label>
-        <input id="${logId}" type="checkbox" />
+        <label class="toggle"><input id="${logId}" type="checkbox" /> Log scale</label>
       </div>
       <div class="form-row" style="margin-top:8px;">
         <label for="${yminId}">Y min</label>
@@ -573,8 +570,9 @@
     const linMax = (allValues.concat(numericMeans).length ? Math.max(...allValues, ...numericMeans) : 1);
     const posValues = allValues.filter(v => v > 0).concat(numericMeans.filter(v => v > 0));
 
+    const yTitle = unit ? `${label}<br>(${unit})` : label;
     const yaxis = {
-      title: unit ? `${label} (${unit})` : label,
+      title: { text: yTitle, standoff: 8 },
       type: opts.log ? 'log' : 'linear',
       autorange: true,
       gridcolor: '#e5e7eb',
@@ -636,11 +634,13 @@
     const small = width < 560;
     const tickAngle = crowded ? -45 : 0;
     const bottomMargin = crowded ? 110 : 60;
-    const height = small ? 280 : 360;
+    const yTitleHasBreak = yTitle.indexOf('<br>') !== -1;
+    const height = (small ? 280 : 360) + (yTitleHasBreak ? 40 : 0);
+    const leftMargin = (yTitle.length > 24) ? 90 : 70;
 
     const layout = {
       height,
-      margin: { l: 70, r: 20, t: 10, b: bottomMargin },
+      margin: { l: leftMargin, r: 20, t: 10, b: bottomMargin },
       xaxis: {
         title: groupUnit ? `${groupName} (${groupUnit})` : groupName,
         tickmode: 'array',

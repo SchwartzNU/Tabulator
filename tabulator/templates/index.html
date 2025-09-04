@@ -31,16 +31,20 @@
         <div class="dataset-meta">
           <div><strong>ID:</strong> {{ dataset_id }}</div>
           <div><strong>Shape:</strong> {{ info.rows }} rows × {{ info.cols }} cols</div>
-          <div><strong>Columns:</strong></div>
-          <div class="columns-list">
-            {% for c in info.columns %}
-              <span class="col-chip" title="{{ c }}">{{ c }}</span>
-            {% endfor %}
-          </div>
+          <details class="columns-details">
+            <summary>Columns ({{ info.cols }})</summary>
+            <div class="columns-list">
+              {% for c in info.columns %}
+                <span class="col-chip" title="{{ c }}">{{ c }}</span>
+              {% endfor %}
+            </div>
+          </details>
         </div>
         {% if preview_html %}
-          <div class="table-preview">{{ preview_html | safe }}</div>
-          <div class="muted" style="margin-top:6px; color: var(--muted);">Showing first 10 rows …</div>
+          <details class="preview-details">
+            <summary>Preview (first 10 rows)</summary>
+            <div class="table-preview">{{ preview_html | safe }}</div>
+          </details>
         {% endif %}
         {% if units_items %}
           <h3>Units</h3>
