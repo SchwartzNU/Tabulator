@@ -95,6 +95,8 @@
       const t = typeSel.value;
       if (t === 'bar') {
         await buildBarConfig(card, configEl, previewEl);
+      } else if (t === 'scatter') {
+        await buildScatterConfig(card, configEl, previewEl);
       } else {
         configEl.innerHTML = '';
         previewEl.innerHTML = '';
@@ -103,6 +105,297 @@
 
     typeSel.addEventListener('change', renderForType);
     await renderForType();
+  }
+
+  async function buildScatterConfig(card, configEl, previewEl) {
+    // Get columns and split numeric/all for selections
+    let cols;
+    try {
+      const meta = await fetchJSON('/api/columns');
+      cols = meta.columns || [];
+    } catch (e) {
+      configEl.innerHTML = '<div style="color: var(--muted);">No dataset loaded.</div>';
+      previewEl.innerHTML = '';
+      return;
+    }
+    const numeric = cols.filter(c => c.is_numeric);
+    const allCols = cols;
+
+    const id = card.dataset.seq;
+    const xId = `plot-${id}-x`;
+    const yId = `plot-${id}-y`;
+    const groupId = `plot-${id}-group`;
+    const errxId = `plot-${id}-errx`;
+    const erryId = `plot-${id}-erry`;
+    const logxId = `plot-${id}-logx`;
+    const logyId = `plot-${id}-logy`;
+    const xminId = `plot-${id}-xmin`;
+    const xmaxId = `plot-${id}-xmax`;
+    const yminId = `plot-${id}-ymin`;
+    const ymaxId = `plot-${id}-ymax`;
+
+    configEl.innerHTML = `
+      <div class="form-row">
+        <label for="${xId}">X variable</label>
+        <select id="${xId}"></select>
+        <label for="${yId}">Y variable</label>
+        <select id="${yId}"></select>
+        <label for="${groupId}">Group by</label>
+        <select id="${groupId}">
+          <option value="">None</option>
+        </select>
+      </div>
+      <div class="form-row" style="margin-top:8px;">
+        <label for="${errxId}">X error</label>
+        <select id="${errxId}">
+          <option value="none">None</option>
+          <option value="sd">SD</option>
+          <option value="sem">SEM</option>
+        </select>
+        <label for="${erryId}">Y error</label>
+        <select id="${erryId}">
+          <option value="none">None</option>
+          <option value="sd">SD</option>
+          <option value="sem">SEM</option>
+        </select>
+        <label for="${logxId}">Log X</label>
+        <input id="${logxId}" type="checkbox" />
+        <label for="${logyId}">Log Y</label>
+        <input id="${logyId}" type="checkbox" />
+      </div>
+      <div class="form-row" style="margin-top:8px;">
+        <label for="${xminId}">X min</label>
+        <input type="number" id="${xminId}" placeholder="auto" step="any" />
+        <label for="${xmaxId}">X max</label>
+        <input type="number" id="${xmaxId}" placeholder="auto" step="any" />
+        <label for="${yminId}">Y min</label>
+        <input type="number" id="${yminId}" placeholder="auto" step="any" />
+        <label for="${ymaxId}">Y max</label>
+        <input type="number" id="${ymaxId}" placeholder="auto" step="any" />
+        <button type="button" class="secondary" id="plot-${id}-scatter-autoscale">Autoscale</button>
+      </div>
+    `;
+
+    const xSel = document.getElementById(xId);
+    const ySel = document.getElementById(yId);
+    const groupSel = document.getElementById(groupId);
+    const errxSel = document.getElementById(errxId);
+    const errySel = document.getElementById(erryId);
+    const logxChk = document.getElementById(logxId);
+    const logyChk = document.getElementById(logyId);
+    const xminInp = document.getElementById(xminId);
+    const xmaxInp = document.getElementById(xmaxId);
+    const yminInp = document.getElementById(yminId);
+    const ymaxInp = document.getElementById(ymaxId);
+    const autoBtn = document.getElementById(`plot-${id}-scatter-autoscale`);
+
+    for (const c of numeric) {
+      const opt = document.createElement('option');
+      opt.value = opt.textContent = c.name;
+      xSel.appendChild(opt);
+    }
+    for (const c of numeric) {
+      const opt = document.createElement('option');
+      opt.value = opt.textContent = c.name;
+      ySel.appendChild(opt);
+    }
+    for (const c of allCols) {
+      const opt = document.createElement('option');
+      opt.value = opt.textContent = c.name;
+      groupSel.appendChild(opt);
+    }
+
+    if (numeric.length) xSel.value = numeric[0].name;
+    if (numeric.length > 1) ySel.value = numeric[1].name;
+
+    async function refreshPlot() {
+      const x = xSel.value;
+      const y = ySel.value;
+      const group = groupSel.value || '';
+      const errx = errxSel.value; // none|sd|sem
+      const erry = errySel.value; // none|sd|sem
+      const logx = !!logxChk.checked;
+      const logy = !!logyChk.checked;
+      try {
+        const q = new URLSearchParams({ x, y });
+        if (group) q.set('group', group);
+        const data = await fetchJSON(`/api/plot/scatter?${q.toString()}`);
+        const opts = { errx, erry, logx, logy };
+        const xMin = parseFloat(xminInp.value);
+        const xMax = parseFloat(xmaxInp.value);
+        const yMin = parseFloat(yminInp.value);
+        const yMax = parseFloat(ymaxInp.value);
+        if (!Number.isNaN(xMin)) opts.xMin = xMin;
+        if (!Number.isNaN(xMax)) opts.xMax = xMax;
+        if (!Number.isNaN(yMin)) opts.yMin = yMin;
+        if (!Number.isNaN(yMax)) opts.yMax = yMax;
+        renderScatterPlot(previewEl, data, opts);
+      } catch (e) {
+        previewEl.innerHTML = `<div style=\"color: var(--muted);\">${String(e)}</div>`;
+      }
+    }
+
+    xSel.addEventListener('change', refreshPlot);
+    ySel.addEventListener('change', refreshPlot);
+    groupSel.addEventListener('change', refreshPlot);
+    errxSel.addEventListener('change', refreshPlot);
+    errySel.addEventListener('change', refreshPlot);
+    logxChk.addEventListener('change', refreshPlot);
+    logyChk.addEventListener('change', refreshPlot);
+    xminInp.addEventListener('change', refreshPlot);
+    xmaxInp.addEventListener('change', refreshPlot);
+    yminInp.addEventListener('change', refreshPlot);
+    ymaxInp.addEventListener('change', refreshPlot);
+    autoBtn.addEventListener('click', () => { xminInp.value = ''; xmaxInp.value=''; yminInp.value=''; ymaxInp.value=''; refreshPlot(); });
+    await refreshPlot();
+  }
+
+  function renderScatterPlot(container, data, opts = { errx: 'none', erry: 'none', logx: false, logy: false }) {
+    const groups = Array.isArray(data.groups) ? data.groups : [];
+    const xLabel = data.x || '';
+    const yLabel = data.y || '';
+    const xUnit = data.x_unit || '';
+    const yUnit = data.y_unit || '';
+    const titleX = xUnit ? `${xLabel} (${xUnit})` : xLabel;
+    const titleY = yUnit ? `${yLabel} (${yUnit})` : yLabel;
+
+    // Simple palette matching points and means per group
+    const palette = ['#60a5fa','#34d399','#f59e0b','#ef4444','#a78bfa','#10b981','#f472b6','#22d3ee','#fb7185','#93c5fd'];
+
+    const traces = [];
+    groups.forEach((g, i) => {
+      const color = palette[i % palette.length];
+      const pts = Array.isArray(g.points) ? g.points : [];
+      const x = [], y = [], text = [];
+      pts.forEach(p => {
+        const xv = p.x, yv = p.y;
+        if (!(typeof xv === 'number' && isFinite(xv))) return;
+        if (!(typeof yv === 'number' && isFinite(yv))) return;
+        if (opts.logx && !(xv > 0)) return;
+        if (opts.logy && !(yv > 0)) return;
+        x.push(xv);
+        y.push(yv);
+        const id = (p.id ?? '').toString();
+        text.push(id ? `${id}, (${xv}, ${yv})` : `(${xv}, ${yv})`);
+      });
+      traces.push({
+        type: 'scattergl',
+        mode: 'markers',
+        name: String(g.name ?? 'Group'),
+        legendgroup: `g${i}`,
+        x, y, text,
+        marker: { color, opacity: 0.8, size: 6 },
+        hovertemplate: '%{text}<extra></extra>',
+      });
+
+      const m = g.mean || {};
+      const mx = (typeof m.x === 'number' && isFinite(m.x)) ? m.x : null;
+      const my = (typeof m.y === 'number' && isFinite(m.y)) ? m.y : null;
+      if (mx !== null && my !== null) {
+        let errx = 0, erry = 0, vx = true, vy = true;
+        if (opts.errx === 'sd') { errx = (typeof m.errx_sd === 'number' && isFinite(m.errx_sd)) ? m.errx_sd : 0; }
+        else if (opts.errx === 'sem') { errx = (typeof m.errx_sem === 'number' && isFinite(m.errx_sem)) ? m.errx_sem : 0; }
+        else { vx = false; }
+        if (opts.erry === 'sd') { erry = (typeof m.erry_sd === 'number' && isFinite(m.erry_sd)) ? m.erry_sd : 0; }
+        else if (opts.erry === 'sem') { erry = (typeof m.erry_sem === 'number' && isFinite(m.erry_sem)) ? m.erry_sem : 0; }
+        else { vy = false; }
+        // For log axes, ensure positive mean and clamp errors so lower bound remains positive
+        if (opts.logx) {
+          if (!(mx > 0)) { vx = false; vy = vy && (opts.logy ? my > 0 : true); /* skip mean if invalid later */ }
+          if (vx && errx > 0) { errx = Math.min(errx, mx - 1e-12); if (!(errx > 0)) vx = false; }
+        }
+        if (opts.logy) {
+          if (!(my > 0)) { vy = false; vx = vx && (opts.logx ? mx > 0 : true); }
+          if (vy && erry > 0) { erry = Math.min(erry, my - 1e-12); if (!(erry > 0)) vy = false; }
+        }
+        // Skip mean marker entirely if any required log axis has non-positive mean
+        if ((opts.logx && !(mx > 0)) || (opts.logy && !(my > 0))) {
+          // do not add mean trace
+        } else {
+          traces.push({
+            type: 'scatter',
+            mode: 'markers',
+            name: `${String(g.name ?? 'Group')} mean`,
+            legendgroup: `g${i}`,
+            x: [mx], y: [my],
+            marker: { color, symbol: 'x', size: 10, line: { color: '#111827', width: 1 } },
+            error_x: { type: 'data', array: [errx], visible: vx, color: '#111827', thickness: 1 },
+            error_y: { type: 'data', array: [erry], visible: vy, color: '#111827', thickness: 1 },
+            hovertemplate: `${String(g.name ?? 'Group')} mean: (${mx}, ${my})<extra></extra>`,
+          });
+        }
+      }
+    });
+
+    const width = container.clientWidth || 800;
+    const small = width < 560;
+    const height = small ? 280 : 360;
+
+    // Data extents for optional manual bounds
+    const allX = [];
+    const allY = [];
+    groups.forEach(g => {
+      const pts = Array.isArray(g.points) ? g.points : [];
+      pts.forEach(p => {
+        if (isFinite(p.x) && (!opts.logx || p.x > 0)) allX.push(p.x);
+        if (isFinite(p.y) && (!opts.logy || p.y > 0)) allY.push(p.y);
+      });
+      const m = g.mean || {};
+      if (isFinite(m.x) && (!opts.logx || m.x > 0)) allX.push(m.x);
+      if (isFinite(m.y) && (!opts.logy || m.y > 0)) allY.push(m.y);
+    });
+    const xLinMin = allX.length ? Math.min(...allX) : 0;
+    const xLinMax = allX.length ? Math.max(...allX) : 1;
+    const yLinMin = allY.length ? Math.min(...allY) : 0;
+    const yLinMax = allY.length ? Math.max(...allY) : 1;
+
+    const hasXMin = typeof opts.xMin === 'number' && isFinite(opts.xMin);
+    const hasXMax = typeof opts.xMax === 'number' && isFinite(opts.xMax);
+    const hasYMin = typeof opts.yMin === 'number' && isFinite(opts.yMin);
+    const hasYMax = typeof opts.yMax === 'number' && isFinite(opts.yMax);
+
+    const xaxis = { title: titleX, automargin: true, gridcolor: '#f3f4f6', type: opts.logx ? 'log' : 'linear', zeroline: !opts.logx, zerolinecolor: '#9ca3af' };
+    if (hasXMin || hasXMax) {
+      const minX = hasXMin ? opts.xMin : xLinMin;
+      const maxX = hasXMax ? opts.xMax : xLinMax;
+      if (opts.logx) {
+        if ((hasXMin ? minX > 0 : true) && (hasXMax ? maxX > 0 : true) && maxX > minX) {
+          xaxis.autorange = false;
+          xaxis.range = [Math.log10(minX > 0 ? minX : xLinMin || 1), Math.log10(maxX > 0 ? maxX : xLinMax || 10)];
+        }
+      } else if (maxX > minX) {
+        xaxis.autorange = false; xaxis.range = [minX, maxX];
+      }
+    }
+    const yaxis = { title: titleY, automargin: true, gridcolor: '#e5e7eb', type: opts.logy ? 'log' : 'linear', zeroline: !opts.logy, zerolinecolor: '#9ca3af' };
+    if (hasYMin || hasYMax) {
+      const minY = hasYMin ? opts.yMin : yLinMin;
+      const maxY = hasYMax ? opts.yMax : yLinMax;
+      if (opts.logy) {
+        if ((hasYMin ? minY > 0 : true) && (hasYMax ? maxY > 0 : true) && maxY > minY) {
+          yaxis.autorange = false;
+          yaxis.range = [Math.log10(minY > 0 ? minY : yLinMin || 1), Math.log10(maxY > 0 ? maxY : yLinMax || 10)];
+        }
+      } else if (maxY > minY) {
+        yaxis.autorange = false; yaxis.range = [minY, maxY];
+      }
+    }
+
+    const layout = {
+      height,
+      margin: { l: 70, r: 20, t: 10, b: 60 },
+      xaxis,
+      yaxis,
+      plot_bgcolor: '#ffffff',
+      paper_bgcolor: '#ffffff',
+      showlegend: true,
+    };
+
+    const config = { responsive: true, displayModeBar: false };
+    container.innerHTML = '';
+    const div = document.createElement('div');
+    container.appendChild(div);
+    Plotly.newPlot(div, traces, layout, config);
   }
 
   async function buildBarConfig(card, configEl, previewEl) {
@@ -209,6 +502,7 @@
     const unit = data.unit || '';
     const label = data.value || '';
     const groupName = data.group || '';
+    const groupUnit = data.group_unit || '';
 
     const xlabels = groups.map(g => String(g.name));
     const xpos = groups.map((_, i) => i);
@@ -348,7 +642,7 @@
       height,
       margin: { l: 70, r: 20, t: 10, b: bottomMargin },
       xaxis: {
-        title: groupName,
+        title: groupUnit ? `${groupName} (${groupUnit})` : groupName,
         tickmode: 'array',
         tickvals: xpos,
         ticktext: xlabels,

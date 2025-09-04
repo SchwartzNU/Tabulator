@@ -137,10 +137,127 @@ def api_plot_bar():
         })
 
     unit = ds.units.get(value, "") if isinstance(ds.units, dict) else ""
+    group_unit = ds.units.get(group, "") if isinstance(ds.units, dict) else ""
     return jsonify({
         "value": value,
         "group": group,
         "unit": unit,
+        "group_unit": group_unit,
+        "groups": groups_out,
+    })
+
+
+@bp.get("/api/plot/scatter")
+def api_plot_scatter():
+    x = request.args.get("x")
+    y = request.args.get("y")
+    group = request.args.get("group")
+    if not x or not y:
+        return jsonify({"error": "missing_params"}), 400
+
+    dataset_id = session.get("dataset_id")
+    ds = store.get(dataset_id) if dataset_id else None
+    if ds is None:
+        return jsonify({"error": "no_dataset"}), 404
+    df = ds.df
+    if x not in df.columns or y not in df.columns:
+        return jsonify({"error": "bad_columns"}), 400
+
+    import pandas as pd
+
+    xcol = df[x]
+    if isinstance(xcol, pd.DataFrame):
+        xcol = xcol.iloc[:, 0]
+    ycol = df[y]
+    if isinstance(ycol, pd.DataFrame):
+        ycol = ycol.iloc[:, 0]
+
+    xnum = pd.to_numeric(xcol, errors="coerce")
+    ynum = pd.to_numeric(ycol, errors="coerce")
+
+    data_dict = {"_x": xnum, "_y": ynum}
+    # Optional group
+    gseries = None
+    if group and group in df.columns:
+        gseries = df[group]
+        if isinstance(gseries, pd.DataFrame):
+            gseries = gseries.iloc[:, 0]
+        data_dict["_group"] = gseries
+
+    # Optional ID for tooltips
+    id_source = None
+    for cname in ("segment_ID", "segmentID", "cell_name"):
+        if cname in df.columns:
+            id_source = cname
+            break
+    if id_source is not None:
+        idcol = df[id_source]
+        if isinstance(idcol, pd.DataFrame):
+            idcol = idcol.iloc[:, 0]
+        data_dict["_id"] = idcol
+
+    tmp = pd.DataFrame(data_dict).dropna(subset=["_x", "_y"])
+
+    # Build groups
+    def compute_group_stats(gdf):
+        import math
+        xs = gdf["_x"].astype(float)
+        ys = gdf["_y"].astype(float)
+        n = int(len(xs))
+        mx = float(xs.mean()) if n else None
+        my = float(ys.mean()) if n else None
+        sd_x = float(xs.std(ddof=1)) if n > 1 else None
+        sd_y = float(ys.std(ddof=1)) if n > 1 else None
+        sem_x = float(sd_x / math.sqrt(n)) if (sd_x is not None and n > 0) else None
+        sem_y = float(sd_y / math.sqrt(n)) if (sd_y is not None and n > 0) else None
+        return {
+            "x": mx,
+            "y": my,
+            "errx_sd": sd_x,
+            "errx_sem": sem_x,
+            "erry_sd": sd_y,
+            "erry_sem": sem_y,
+            "count": n,
+        }
+
+    groups_out = []
+    if gseries is not None:
+        for gval, gdf in tmp.groupby("_group", dropna=False):
+            pts = []
+            has_id = "_id" in gdf.columns
+            if has_id:
+                for xi, yi, pid in zip(gdf["_x"].tolist(), gdf["_y"].tolist(), gdf["_id"].tolist()):
+                    pts.append({"x": float(xi), "y": float(yi), "id": str(pid)})
+            else:
+                for xi, yi in zip(gdf["_x"].tolist(), gdf["_y"].tolist()):
+                    pts.append({"x": float(xi), "y": float(yi), "id": ""})
+            groups_out.append({
+                "name": str(gval),
+                "points": pts,
+                "mean": compute_group_stats(gdf),
+            })
+    else:
+        pts = []
+        if "_id" in tmp.columns:
+            for xi, yi, pid in zip(tmp["_x"].tolist(), tmp["_y"].tolist(), tmp["_id"].tolist()):
+                pts.append({"x": float(xi), "y": float(yi), "id": str(pid)})
+        else:
+            for xi, yi in zip(tmp["_x"].tolist(), tmp["_y"].tolist()):
+                pts.append({"x": float(xi), "y": float(yi), "id": ""})
+        groups_out.append({
+            "name": "All",
+            "points": pts,
+            "mean": compute_group_stats(tmp),
+        })
+
+    x_unit = ds.units.get(x, "") if isinstance(ds.units, dict) else ""
+    y_unit = ds.units.get(y, "") if isinstance(ds.units, dict) else ""
+    return jsonify({
+        "x": x,
+        "y": y,
+        "x_unit": x_unit,
+        "y_unit": y_unit,
+        "group": group if group in df.columns else None,
         "groups": groups_out,
     })
 

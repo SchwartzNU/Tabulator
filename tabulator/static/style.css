@@ -117,6 +117,7 @@ input[type="file"] {
   width: 100%;
   border-collapse: collapse;
 }
+.table-preview { overflow-x: auto; }
 .table-preview th, .table-preview td {
   border: 1px solid var(--border);
   padding: 6px 8px;
@@ -147,3 +148,22 @@ input[type="number"], input[type="text"] {
   .card-body { padding: 12px; }
   .card-header { padding: 10px 12px; }
 }
+
+/* Dataset card improvements */
+.dataset-meta { display: grid; gap: 6px; }
+.columns-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.col-chip {
+  display: inline-block;
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #f9fafb;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.units-table-wrap { max-height: 260px; overflow: auto; }

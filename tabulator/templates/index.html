@@ -28,18 +28,23 @@
         </button>
       </div>
       <div class="card-body" id="dataset-body">
-        <p>
-          <strong>ID:</strong> {{ dataset_id }}<br />
-          <strong>Shape:</strong> {{ info.rows }} rows × {{ info.cols }} cols<br />
-          <strong>Columns:</strong> {{ ", ".join(info.columns) }}
-        </p>
+        <div class="dataset-meta">
+          <div><strong>ID:</strong> {{ dataset_id }}</div>
+          <div><strong>Shape:</strong> {{ info.rows }} rows × {{ info.cols }} cols</div>
+          <div><strong>Columns:</strong></div>
+          <div class="columns-list">
+            {% for c in info.columns %}
+              <span class="col-chip" title="{{ c }}">{{ c }}</span>
+            {% endfor %}
+          </div>
+        </div>
         {% if preview_html %}
           <div class="table-preview">{{ preview_html | safe }}</div>
           <div class="muted" style="margin-top:6px; color: var(--muted);">Showing first 10 rows …</div>
         {% endif %}
         {% if units_items %}
           <h3>Units</h3>
-          <div class="table-preview">
+          <div class="table-preview units-table-wrap">
             <table>
               <thead><tr><th>Variable</th><th>Unit</th></tr></thead>
               <tbody>
