@@ -50,7 +50,9 @@ def _load_csv_formatted(path: str) -> DataSet:
         df = _infer_and_cast_columns(df)
         # Build units mapping
         units = {h: (u if u != "nan" else "") for h, u in zip(header, units_row)}
-        units.setdefault("segmentID", "")
+        # Only add default unit for segmentID if it's a column
+        if "segmentID" in df.columns and "segmentID" not in units:
+            units["segmentID"] = ""
         return DataSet(df=df, units=units)
     except Exception as e:
         raise LoadError(f"Failed to read formatted CSV: {e}") from e
@@ -68,7 +70,9 @@ def _load_pickle_formatted(path: str) -> DataSet:
         units: Dict[str, str] = {}
         if isinstance(units_df, pd.DataFrame) and {"variable", "unit"}.issubset(units_df.columns):
             units = {str(row["variable"]): str(row["unit"]) for _, row in units_df.iterrows()}
-        units.setdefault("segmentID", "")
+        # Only add default unit for segmentID if it's a column
+        if "segmentID" in df.columns and "segmentID" not in units:
+            units["segmentID"] = ""
         if not isinstance(df, pd.DataFrame):
             raise LoadError("Pickle 'table' is not a DataFrame")
         return DataSet(df=df, units=units)
@@ -125,7 +129,9 @@ def _load_h5_formatted(path: str) -> DataSet:
         df = pd.DataFrame(rows)
         # Convert only columns that are fully numeric-like
         df = _infer_and_cast_columns(df)
-        units.setdefault("segmentID", "")
+        # Only add default unit for segmentID if it's a column
+        if "segmentID" in df.columns and "segmentID" not in units:
+            units["segmentID"] = ""
         return DataSet(df=df, units=units)
     except Exception as e:
         raise LoadError(f"Failed to read formatted HDF5: {e}") from e
@@ -171,23 +177,56 @@ def _load_mat_formatted(path: str) -> DataSet:
     df = pd.DataFrame(rows)
     # Convert only columns that are fully numeric-like
     df = _infer_and_cast_columns(df)
-    units.setdefault("segmentID", "")
+    # Only add default unit for segmentID if it's a column
+    if "segmentID" in df.columns and "segmentID" not in units:
+        units["segmentID"] = ""
     return DataSet(df=df, units=units)
 
 
 def _mat_units_to_dict(Units: Any) -> Dict[str, str]:
+    def _normalize_unit(v: Any) -> str:
+        # Treat MATLAB empty ([]) as blank
+        if v is None:
+            return ""
+        # NumPy arrays (MATLAB data)
+        if isinstance(v, np.ndarray):
+            if v.size == 0:
+                return ""
+            # 1x1 -> scalar
+            if v.size == 1:
+                v = v.reshape(())
+                v = v.tolist() if isinstance(v, np.ndarray) else v
+            # Char arrays -> join into Python string
+            elif v.dtype.kind in {"S", "U"}:
+                try:
+                    return "".join(v.astype(str).tolist())
+                except Exception:
+                    return str(v.astype(str))
+        # Decode bytes
+        if isinstance(v, (bytes, bytearray)):
+            try:
+                v = v.decode("utf-8", errors="ignore")
+            except Exception:
+                return ""
+        # NaN -> blank
+        try:
+            import math
+            if isinstance(v, float) and math.isnan(v):
+                return ""
+        except Exception:
+            pass
+        return str(v)
+
     out: Dict[str, str] = {}
     # Units is typically a struct with attributes per field
     if hasattr(Units, "_fieldnames"):
         for name in Units._fieldnames:
             v = getattr(Units, name)
-            if isinstance(v, np.ndarray) and v.size == 1:
-                v = v.reshape(()).tolist()
-            out[str(name)] = str(v if v is not None else "")
+            out[str(name)] = _normalize_unit(v)
         return out
     # Fallback: try dict-like
     if isinstance(Units, dict):
-        return {str(k): str(v) for k, v in Units.items()}
+        return {str(k): _normalize_unit(v) for k, v in Units.items()}
     return out
 
 
@@ -204,12 +243,36 @@ def _mat_struct_array_to_rows(S: Any) -> list[Dict[str, Any]]:
                     v = getattr(elem, name)
                     # Coerce scalars and 1x1 arrays
                     if isinstance(v, np.ndarray) and v.size == 1:
-                        v = v.reshape(()).tolist()
-                    # Preserve strings as text; numbers stay numeric
+                        v = v.reshape(())
+                        v = v.tolist() if isinstance(v, np.ndarray) else v
+                    # Join MATLAB char arrays into Python strings
+                    if isinstance(v, np.ndarray) and v.dtype.kind in {"S", "U"}:
+                        try:
+                            v = "".join(v.astype(str).tolist())
+                        except Exception:
+                            v = v.astype(str)
+                    # Decode bytes
                     if isinstance(v, (bytes, bytearray)):
                         v = v.decode("utf-8", errors="ignore")
-                row[str(name)] = v
+                    row[str(name)] = v
             rows.append(row)
+    elif hasattr(S, "_fieldnames"):
+        # Single MATLAB struct -> one row
+        row: Dict[str, Any] = {}
+        for name in S._fieldnames:
+            v = getattr(S, name)
+            if isinstance(v, np.ndarray) and v.size == 1:
+                v = v.reshape(())
+                v = v.tolist() if isinstance(v, np.ndarray) else v
+            if isinstance(v, np.ndarray) and v.dtype.kind in {"S", "U"}:
+                try:
+                    v = "".join(v.astype(str).tolist())
+                except Exception:
+                    v = v.astype(str)
+            if isinstance(v, (bytes, bytearray)):
+                v = v.decode("utf-8", errors="ignore")
+            row[str(name)] = v
+        rows.append(row)
     return rows
 
 
