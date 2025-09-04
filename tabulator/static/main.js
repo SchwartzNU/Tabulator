@@ -245,13 +245,20 @@
 
     const pointX = [];
     const pointY = [];
+    const pointText = [];
     const jitter = 0.25;
     groups.forEach((g, i) => {
-      const vals = (g.values || []).filter(v => typeof v === 'number' && isFinite(v));
-      vals.forEach(v => {
+      const pts = Array.isArray(g.points) && g.points.length
+        ? g.points
+        : (g.values || []).map(v => ({ id: '', value: v }));
+      pts.forEach(p => {
+        const v = p.value;
+        if (!(typeof v === 'number' && isFinite(v))) return;
         if (opts.log && !(v > 0)) return;
         pointX.push(i + (Math.random() - 0.5) * 2 * jitter);
         pointY.push(v);
+        const id = (p.id ?? '').toString();
+        pointText.push(id ? `${id}, ${v}` : `${v}`);
       });
     });
     const pointsTrace = {
@@ -259,8 +266,9 @@
       mode: 'markers',
       x: pointX,
       y: pointY,
+      text: pointText,
       marker: { color: '#111827', opacity: 0.5, size: 5 },
-      hovertemplate: '%{y}<extra></extra>',
+      hovertemplate: '%{text}<extra></extra>',
       showlegend: false,
     };
 
@@ -328,17 +336,27 @@
       }
     }
 
+    // Responsive layout tweaks based on container width and crowding
+    const width = container.clientWidth || 800;
+    const crowded = xlabels.length > 10;
+    const small = width < 560;
+    const tickAngle = crowded ? -45 : 0;
+    const bottomMargin = crowded ? 110 : 60;
+    const height = small ? 280 : 360;
+
     const layout = {
-      height: 360,
-      margin: { l: 70, r: 20, t: 10, b: 60 },
+      height,
+      margin: { l: 70, r: 20, t: 10, b: bottomMargin },
       xaxis: {
         title: groupName,
         tickmode: 'array',
         tickvals: xpos,
         ticktext: xlabels,
+        tickangle: tickAngle,
+        automargin: true,
         gridcolor: '#f3f4f6',
       },
-      yaxis,
+      yaxis: { ...yaxis, automargin: true },
       plot_bgcolor: '#ffffff',
       paper_bgcolor: '#ffffff',
       showlegend: false,

@@ -46,11 +46,8 @@ def _load_csv_formatted(path: str) -> DataSet:
         units_row = raw.iloc[1].astype(str).fillna("").tolist()
         df = raw.iloc[2:].reset_index(drop=True)
         df.columns = header
-        # Convert numeric columns where possible
-        for col in df.columns:
-            if col == "segmentID":
-                continue
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+        # Convert only columns that are fully numeric-like
+        df = _infer_and_cast_columns(df)
         # Build units mapping
         units = {h: (u if u != "nan" else "") for h, u in zip(header, units_row)}
         units.setdefault("segmentID", "")
@@ -126,11 +123,8 @@ def _load_h5_formatted(path: str) -> DataSet:
                         row[k] = np.nan
                 rows.append(row)
         df = pd.DataFrame(rows)
-        # Ensure numeric columns where possible (except segmentID)
-        for col in df.columns:
-            if col == "segmentID":
-                continue
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+        # Convert only columns that are fully numeric-like
+        df = _infer_and_cast_columns(df)
         units.setdefault("segmentID", "")
         return DataSet(df=df, units=units)
     except Exception as e:
@@ -166,11 +160,8 @@ def _load_mat_formatted(path: str) -> DataSet:
     if not rows:
         raise LoadError("MAT 'S' contained no rows")
     df = pd.DataFrame(rows)
-    # Coerce numeric columns
-    for col in df.columns:
-        if col == "segmentID":
-            continue
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+    # Convert only columns that are fully numeric-like
+    df = _infer_and_cast_columns(df)
     units.setdefault("segmentID", "")
     return DataSet(df=df, units=units)
 
@@ -205,9 +196,44 @@ def _mat_struct_array_to_rows(S: Any) -> list[Dict[str, Any]]:
                     # Coerce scalars and 1x1 arrays
                     if isinstance(v, np.ndarray) and v.size == 1:
                         v = v.reshape(()).tolist()
-                    # Non-numeric entries are saved as NaN per export notes
-                    if isinstance(v, (str, bytes, bytearray)):
-                        v = float("nan")
-                    row[str(name)] = v
-                rows.append(row)
+                    # Preserve strings as text; numbers stay numeric
+                    if isinstance(v, (bytes, bytearray)):
+                        v = v.decode("utf-8", errors="ignore")
+                row[str(name)] = v
+            rows.append(row)
     return rows
+
+
+def _infer_and_cast_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Cast columns to numeric only when all non-null values are numeric-like.
+
+    - Leaves columns with any non-numeric text as object dtype.
+    - Always leaves `segmentID` unchanged.
+    """
+    out = df.copy()
+    for col in out.columns:
+        if str(col) in {"segmentID", "segment_ID", "cell_name"}:
+            continue
+        s = out[col]
+        # Normalize bytes to strings for object columns before checks
+        if s.dtype == object:
+            s = s.apply(lambda v: v.decode("utf-8", errors="ignore") if isinstance(v, (bytes, bytearray)) else v)
+        # Try converting to numeric; if any non-empty become NaN, keep original
+        coerced = pd.to_numeric(s, errors="coerce")
+
+        # Treat empty/whitespace-only strings as missing for inference
+        def is_present(v: Any) -> bool:
+            if pd.isna(v):
+                return False
+            if isinstance(v, str):
+                return len(v.strip()) > 0
+            return True
+
+        present_mask = s.apply(is_present)
+
+        # If all present values successfully converted (not NaN), accept
+        if coerced[present_mask].notna().all():
+            out[col] = coerced
+        else:
+            out[col] = s
+    return out

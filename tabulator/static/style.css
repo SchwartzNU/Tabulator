@@ -30,7 +30,8 @@ html, body {
 }
 
 .container {
-  max-width: 880px;
+  max-width: 960px;
+  width: 100%;
   margin: 20px auto;
   padding: 0 16px;
 }
@@ -126,9 +127,9 @@ input[type="file"] {
 }
 
 /* Forms */
-.form-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-label { font-weight: 600; }
-select { padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: #fff; color: var(--text); }
+.form-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; row-gap: 8px; }
+label { font-weight: 600; white-space: nowrap; }
+select { padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: #fff; color: var(--text); max-width: 100%; }
 input[type="number"], input[type="text"] {
   padding: 8px;
   border: 1px solid var(--border);
@@ -136,4 +137,13 @@ input[type="number"], input[type="text"] {
   background: #fff;
   color: var(--text);
   width: 120px;
+}
+
+/* Plot container: allow Plotly to size responsively without clipping */
+.plot-card .plot-preview { width: 100%; overflow-x: auto; }
+.plot-card .plot-preview > div { width: 100% !important; }
+
+@media (max-width: 640px) {
+  .card-body { padding: 12px; }
+  .card-header { padding: 10px 12px; }
 }

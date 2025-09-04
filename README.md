@@ -37,8 +37,48 @@ Notes
 -----
 
 - Uploads are parsed into a pandas DataFrame for: `.csv`, `.h5` (first readable key), `.pkl`/`.pickle`, `.mat` (best-effort heuristics via SciPy).
+- Text columns are supported. Loaders only cast a column to numeric when all non-empty values are numeric-like; otherwise the column remains as text and is available for grouping or display without losing values.
 - A simple in-memory LRU cache stores the most recent 10 datasets; the current dataset’s ID is kept in the session.
 - Max upload size is 100 MB by default. Adjust in `tabulator/config.py` if needed.
+
+Sanity-check locally
+--------------------
+
+1) Install deps and run the app
+
+- With Poetry: `poetry install && poetry run python run_local.py`
+- Or with pip (example): `python -m pip install flask python-dotenv pandas scipy tables h5py && python run_local.py`
+
+2) Create a sample CSV with text and numeric columns
+
+```
+name,score,group
+-,unit,none
+Alice,10,A
+Bob,hello,B
+Cara,20,A
+```
+
+3) Upload and query via curl (keeps session cookies so the API can see your dataset)
+
+```
+# In another terminal
+curl -c cookies.txt -b cookies.txt -F "datafile=@sample.csv" -L -s -o /dev/null http://127.0.0.1:5001/upload
+
+# List columns and numeric flags
+curl -b cookies.txt http://127.0.0.1:5001/api/columns | jq .
+
+# If you have a fully-numeric column (e.g., `score` only containing numbers),
+# you can fetch a bar plot aggregation grouped by a text column:
+curl -b cookies.txt "http://127.0.0.1:5001/api/plot/bar?value=score&group=group" | jq .
+```
+
+Expected behavior
+-----------------
+
+- Columns are considered numeric only if all non-empty values are numeric-like. Mixed columns (numbers plus words) remain text.
+- Grouping works with text columns (e.g., `group`).
+- Plotting requires a numeric `value` column; mixed or text-only value columns will be ignored during aggregation (non-numeric entries are dropped).
 
 Troubleshooting
 ---------------

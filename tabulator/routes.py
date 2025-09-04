@@ -91,12 +91,39 @@ def api_plot_bar():
         vcol = vcol.iloc[:, 0]
     # Coerce value column to numeric and drop NaNs
     vcol = pd.to_numeric(vcol, errors="coerce")
-    tmp = pd.DataFrame({"_group": gcol, "_value": vcol}).dropna(subset=["_value"])
+    # Prefer segment_ID, then segmentID, then cell_name for tooltips. Do not fallback to row index.
+    id_source = None
+    for cname in ("segment_ID", "segmentID", "cell_name"):
+        if cname in df.columns:
+            id_source = cname
+            break
+    if id_source is not None:
+        idcol = df[id_source]
+        if isinstance(idcol, pd.DataFrame):
+            idcol = idcol.iloc[:, 0]
+    else:
+        idcol = None
+    data_dict = {"_group": gcol, "_value": vcol}
+    if idcol is not None:
+        data_dict["_id"] = idcol
+    tmp = pd.DataFrame(data_dict).dropna(subset=["_value"])
 
     # Group and compute
     groups_out = []
     for gval, gdf in tmp.groupby("_group", dropna=False):
         vals = gdf["_value"].tolist()
+        if "_id" in gdf.columns:
+            points = [
+                {"id": str(i), "value": float(v)}
+                for i, v in zip(gdf["_id"].tolist(), vals)
+                if isinstance(v, (int, float))
+            ]
+        else:
+            points = [
+                {"id": "", "value": float(v)}
+                for v in vals
+                if isinstance(v, (int, float))
+            ]
         try:
             mean_val = float(gdf["_value"].mean())
         except Exception:
@@ -106,6 +133,7 @@ def api_plot_bar():
             "count": len(vals),
             "mean": mean_val,
             "values": vals,
+            "points": points,
         })
 
     unit = ds.units.get(value, "") if isinstance(ds.units, dict) else ""
