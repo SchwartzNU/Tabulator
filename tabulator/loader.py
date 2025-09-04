@@ -146,11 +146,20 @@ def _load_mat_formatted(path: str) -> DataSet:
     except Exception as e:
         raise LoadError(f"Failed to read MAT file: {e}") from e
 
-    if "S" not in data or "Units" not in data:
-        raise LoadError("MAT file must contain variables 'S' and 'Units'")
+    # Accept both new and legacy variable names
+    struct_keys = ["data", "S"]
+    units_keys = ["unitsStruct", "Units"]
 
-    S = data["S"]
-    Units = data["Units"]
+    struct_key = next((k for k in struct_keys if k in data), None)
+    units_key = next((k for k in units_keys if k in data), None)
+
+    if struct_key is None or units_key is None:
+        raise LoadError(
+            "MAT file must contain struct 'data' (or legacy 'S') and units 'unitsStruct' (or legacy 'Units')"
+        )
+
+    S = data[struct_key]
+    Units = data[units_key]
 
     # Convert Units struct to dict
     units: Dict[str, str] = _mat_units_to_dict(Units)
@@ -158,7 +167,7 @@ def _load_mat_formatted(path: str) -> DataSet:
     # Convert struct array S to DataFrame
     rows = _mat_struct_array_to_rows(S)
     if not rows:
-        raise LoadError("MAT 'S' contained no rows")
+        raise LoadError("MAT struct contained no rows")
     df = pd.DataFrame(rows)
     # Convert only columns that are fully numeric-like
     df = _infer_and_cast_columns(df)
