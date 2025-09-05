@@ -146,6 +146,112 @@ def api_pca():
     })
 
 
+@bp.get("/api/pca/scores")
+def api_pca_scores():
+    """Return PCA scores for selected PCs (2D or 3D) with optional coloring.
+
+    Query params:
+    - pcs: comma-separated 1-based PC indices, length 2 or 3 (e.g., "1,2" or "1,2,3").
+    - color: optional column name used for coloring the points.
+    """
+    pcs_param = (request.args.get("pcs") or "").strip()
+    color_col = request.args.get("color")
+
+    dataset_id = session.get("dataset_id")
+    ds = store.get(dataset_id) if dataset_id else None
+    if ds is None:
+        return jsonify({"error": "no_dataset"}), 404
+    df = ds.df
+
+    import numpy as np
+    import pandas as pd
+
+    # Parse PCs
+    if pcs_param:
+        try:
+            pcs_list = [int(x) for x in pcs_param.split(',') if x.strip()]
+        except Exception:
+            return jsonify({"error": "bad_pcs"}), 400
+    else:
+        pcs_list = [1, 2]  # default 2D
+    if len(pcs_list) not in (2, 3) or any(i < 1 for i in pcs_list):
+        return jsonify({"error": "bad_pcs"}), 400
+
+    # Build numeric data and align ids/color
+    num_df = df.select_dtypes(include=["number"]).copy()
+    drop_names = {"segmentID", "segment_ID"}
+    feat_cols = [c for c in num_df.columns if str(c) not in drop_names]
+    num_df = num_df[feat_cols]
+    if num_df.shape[1] < 1:
+        return jsonify({"error": "no_numeric_columns"}), 400
+
+    clean = num_df.dropna(axis=0, how="any")
+    if clean.shape[0] < 2:
+        return jsonify({"error": "not_enough_rows", "rows": int(clean.shape[0])}), 400
+    idx = clean.index
+
+    id_source = None
+    for cname in ("segmentID", "cell_name"):
+        if cname in df.columns:
+            id_source = cname
+            break
+    if id_source is not None:
+        id_series = df.loc[idx, id_source]
+    else:
+        id_series = pd.Series([""] * len(idx), index=idx)
+    if color_col and color_col in df.columns:
+        color_series = df.loc[idx, color_col]
+    else:
+        color_series = None
+
+    # Standardize and PCA
+    X = clean.to_numpy(dtype=float)
+    X = X - np.nanmean(X, axis=0, keepdims=True)
+    sd = X.std(axis=0, ddof=1)
+    keep_mask = np.isfinite(sd) & (sd > 0)
+    if not np.any(keep_mask):
+        return jsonify({"error": "no_variable_features"}), 400
+    Xz = X[:, keep_mask] / sd[keep_mask]
+    try:
+        U, S, Vt = np.linalg.svd(Xz, full_matrices=False)
+        n = Xz.shape[0]
+        explained_variance = (S ** 2) / (n - 1)
+        total_var = explained_variance.sum()
+        evr = (explained_variance / total_var).tolist() if total_var > 0 else []
+        # Scores: U * S
+        scores = (U * S)  # shape (n, k)
+    except Exception as e:
+        return jsonify({"error": "pca_failed", "detail": str(e)}), 500
+
+    kmax = scores.shape[1]
+    if any(pc > kmax for pc in pcs_list):
+        return jsonify({"error": "pcs_out_of_range", "available": int(kmax)}), 400
+
+    # 0-based indices
+    pcs0 = [pc - 1 for pc in pcs_list]
+    xs = scores[:, pcs0[0]].astype(float).tolist()
+    ys = scores[:, pcs0[1]].astype(float).tolist()
+    zs = scores[:, pcs0[2]].astype(float).tolist() if len(pcs0) == 3 else None
+
+    ids = [str(v) for v in id_series.tolist()]
+    if color_series is not None:
+        colors = color_series.tolist()
+        colors = [None if pd.isna(v) else (float(v) if isinstance(v, (int, float)) else str(v)) for v in colors]
+    else:
+        colors = None
+
+    return jsonify({
+        "pcs": pcs_list,
+        "explained_variance_ratio": evr,
+        "x": xs,
+        "y": ys,
+        "z": zs,
+        "id": ids,
+        "color_values": colors,
+        "color_column": str(color_col) if color_series is not None else None,
+    })
+
+
 @bp.get("/api/dr")
 def api_dimred():
     """2D dimensionality reduction via t-SNE or UMAP, with optional clustering on the 2D embedding.

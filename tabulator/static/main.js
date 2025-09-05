@@ -125,6 +125,14 @@
     const controls = document.getElementById('pca-controls');
     const pcSelect = document.getElementById('pca-loadings-pc');
     const info = document.getElementById('pca-info');
+    const scatterControls = document.getElementById('pca-scatter-controls');
+    const pcaDimSel = document.getElementById('pca-dim');
+    const pcaPcX = document.getElementById('pca-pc-x');
+    const pcaPcY = document.getElementById('pca-pc-y');
+    const pcaPcZField = document.getElementById('pca-pc-z-field');
+    const pcaPcZ = document.getElementById('pca-pc-z');
+    const pcaColorSel = document.getElementById('pca-color');
+    const scatterDiv = document.getElementById('pca-scatter');
     if (!btn || !preview) return;
 
     let pcaData = null;
@@ -140,6 +148,7 @@
         renderPCAElbow(preview, data);
         setupLoadingsControls(controls, pcSelect, data);
         renderPCALoadings(document.getElementById('pca-loadings'), data, 0);
+        await setupPCAScatter(scatterControls, data, { pcaDimSel, pcaPcX, pcaPcY, pcaPcZField, pcaPcZ, pcaColorSel, scatterDiv });
         if (info && data) {
           const ns = data.n_samples ?? '?';
           const nf = data.n_features ?? '?';
@@ -261,6 +270,181 @@
     const div = document.createElement('div');
     container.appendChild(div);
     Plotly.newPlot(div, [bar], layout, config);
+  }
+
+  async function setupPCAScatter(ctrlEl, pcaMeta, refs) {
+    if (!ctrlEl) return;
+    const { pcaDimSel, pcaPcX, pcaPcY, pcaPcZField, pcaPcZ, pcaColorSel, scatterDiv } = refs;
+    const k = typeof pcaMeta.components === 'number' ? pcaMeta.components : (Array.isArray(pcaMeta.explained_variance_ratio) ? pcaMeta.explained_variance_ratio.length : 0);
+    // Populate PC selects
+    function fillPCSelect(sel) {
+      sel.innerHTML = '';
+      for (let i = 1; i <= k; i++) {
+        const opt = document.createElement('option');
+        opt.value = String(i);
+        const frac = (Array.isArray(pcaMeta.explained_variance_ratio) && pcaMeta.explained_variance_ratio[i-1] != null)
+          ? ` (${(pcaMeta.explained_variance_ratio[i-1] * 100).toFixed(1)}%)` : '';
+        opt.textContent = `PC ${i}${frac}`;
+        sel.appendChild(opt);
+      }
+    }
+    fillPCSelect(pcaPcX);
+    fillPCSelect(pcaPcY);
+    fillPCSelect(pcaPcZ);
+    if (k >= 2) { pcaPcX.value = '1'; pcaPcY.value = '2'; }
+    if (k >= 3) { pcaPcZ.value = '3'; }
+
+    // Populate color-by
+    pcaColorSel.innerHTML = '<option value="">None</option>';
+    try {
+      const meta = await fetchJSON('/api/columns');
+      const cols = meta.columns || [];
+      for (const c of cols) {
+        const opt = document.createElement('option');
+        opt.value = opt.textContent = c.name;
+        pcaColorSel.appendChild(opt);
+      }
+    } catch {}
+
+    // Toggle 2D/3D Z control and availability
+    const dim3Opt = Array.from(pcaDimSel.options).find(o => o.value === '3d');
+    if (k < 3 && dim3Opt) {
+      dim3Opt.disabled = true;
+      pcaDimSel.value = '2d';
+    } else if (dim3Opt) {
+      dim3Opt.disabled = false;
+    }
+    // Toggle 2D/3D Z control
+    function syncDim() {
+      const is3d = pcaDimSel.value === '3d';
+      pcaPcZField.style.display = is3d ? '' : 'none';
+    }
+    pcaDimSel.addEventListener('change', () => { syncDim(); refresh(); });
+    pcaPcX.addEventListener('change', refresh);
+    pcaPcY.addEventListener('change', refresh);
+    pcaPcZ.addEventListener('change', refresh);
+    pcaColorSel.addEventListener('change', refresh);
+
+    ctrlEl.style.display = '';
+    syncDim();
+    await refresh();
+
+    async function refresh() {
+      const pcs = [parseInt(pcaPcX.value, 10), parseInt(pcaPcY.value, 10)];
+      if (pcaDimSel.value === '3d') pcs.push(parseInt(pcaPcZ.value, 10));
+      const pcsValid = pcs.every(v => Number.isFinite(v) && v >= 1);
+      if (!pcsValid) return;
+      const params = new URLSearchParams();
+      params.set('pcs', pcs.join(','));
+      const color = pcaColorSel.value || '';
+      if (color) params.set('color', color);
+      try {
+        const data = await fetchJSON(`/api/pca/scores?${params.toString()}`);
+        renderPCAScatter(scatterDiv, data);
+      } catch (e) {
+        scatterDiv.innerHTML = `<div style=\"color: var(--muted);\">${String(e)}</div>`;
+      }
+    }
+  }
+
+  function renderPCAScatter(container, data) {
+    const xs = Array.isArray(data.x) ? data.x : [];
+    const ys = Array.isArray(data.y) ? data.y : [];
+    const zs = Array.isArray(data.z) ? data.z : null;
+    const ids = Array.isArray(data.id) ? data.id : [];
+    const colors = Array.isArray(data.color_values) ? data.color_values : null;
+    const colorCol = data.color_column || '';
+    const pcLabels = Array.isArray(data.pcs) ? data.pcs : [1,2];
+    const evr = Array.isArray(data.explained_variance_ratio) ? data.explained_variance_ratio : [];
+    function axisTitle(axis, idx1based) {
+      const frac = (evr[idx1based-1] != null) ? ` ${(evr[idx1based-1]*100).toFixed(1)}%` : '';
+      return `PC${idx1based}${frac}`;
+    }
+
+    const width = container.clientWidth || 800;
+    const small = width < 560;
+    const height = small ? 320 : 400;
+
+    // Build traces depending on dimension and coloring
+    const palette = ['#60a5fa','#34d399','#f59e0b','#ef4444','#a78bfa','#10b981','#f472b6','#22d3ee','#fb7185','#93c5fd','#fbbf24','#d946ef','#14b8a6','#fca5a5','#4ade80'];
+
+    let traces = [];
+    const is3d = Array.isArray(zs);
+    if (!colors) {
+      const text = ids.map((id, i) => `${id || ''}${id ? ', ' : ''}(${xs[i]}, ${ys[i]}${is3d ? ', ' + zs[i] : ''})`);
+      const base = {
+        name: 'points', text,
+        hovertemplate: '%{text}<extra></extra>'
+      };
+      traces.push(is3d ? {
+        type: 'scatter3d', mode: 'markers', x: xs, y: ys, z: zs, marker: { color: '#111827', size: 3, opacity: 0.9 }, ...base
+      } : {
+        type: 'scattergl', mode: 'markers', x: xs, y: ys, marker: { color: '#111827', size: 5, opacity: 0.9 }, ...base
+      });
+    } else if (colors.every(v => typeof v === 'number')) {
+      const text = ids.map((id, i) => `${id || ''}${id ? ', ' : ''}${colorCol}: ${colors[i]}\n(${xs[i]}, ${ys[i]}${is3d ? ', ' + zs[i] : ''})`);
+      traces.push(is3d ? {
+        type: 'scatter3d', mode: 'markers', x: xs, y: ys, z: zs,
+        marker: { size: 3, opacity: 0.9, color: colors, colorscale: 'Viridis', colorbar: { title: colorCol } },
+        text, hovertemplate: '%{text}<extra></extra>'
+      } : {
+        type: 'scattergl', mode: 'markers', x: xs, y: ys,
+        marker: { size: 6, opacity: 0.9, color: colors, colorscale: 'Viridis', colorbar: { title: colorCol } },
+        text, hovertemplate: '%{text}<extra></extra>'
+      });
+    } else {
+      const groups = new Map();
+      for (let i = 0; i < xs.length; i++) {
+        const key = colors[i] == null ? 'NA' : String(colors[i]);
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(i);
+      }
+      Array.from(groups.entries()).forEach(([name, idxs], j) => {
+        const x = idxs.map(i => xs[i]);
+        const y = idxs.map(i => ys[i]);
+        const z = is3d ? idxs.map(i => zs[i]) : null;
+        const text = idxs.map(i => {
+          const id = ids[i] || '';
+          return `${id}${id ? ', ' : ''}${colorCol}: ${name}\n(${xs[i]}, ${ys[i]}${is3d ? ', ' + zs[i] : ''})`;
+        });
+        traces.push(is3d ? {
+          type: 'scatter3d', mode: 'markers', name: String(name), legendgroup: String(name), x, y, z,
+          marker: { color: palette[j % palette.length], size: 3, opacity: 0.9 }, text,
+          hovertemplate: '%{text}<extra></extra>'
+        } : {
+          type: 'scattergl', mode: 'markers', name: String(name), legendgroup: String(name), x, y,
+          marker: { color: palette[j % palette.length], size: 6, opacity: 0.9 }, text,
+          hovertemplate: '%{text}<extra></extra>'
+        });
+      });
+    }
+
+    const layout = is3d ? {
+      height,
+      margin: { l: 0, r: 0, t: 10, b: 0 },
+      scene: {
+        xaxis: { title: axisTitle('x', pcLabels[0]) },
+        yaxis: { title: axisTitle('y', pcLabels[1]) },
+        zaxis: { title: axisTitle('z', pcLabels[2]) },
+      },
+      plot_bgcolor: '#ffffff',
+      paper_bgcolor: '#ffffff',
+      showlegend: !!colors && !colors.every(v => typeof v === 'number'),
+    } : {
+      height,
+      margin: { l: 60, r: 20, t: 10, b: 50 },
+      xaxis: { title: axisTitle('x', pcLabels[0]), automargin: true, zeroline: false, gridcolor: '#f3f4f6' },
+      yaxis: { title: axisTitle('y', pcLabels[1]), automargin: true, zeroline: false, gridcolor: '#f3f4f6' },
+      plot_bgcolor: '#ffffff',
+      paper_bgcolor: '#ffffff',
+      showlegend: !!colors && !colors.every(v => typeof v === 'number'),
+    };
+
+    const config = { responsive: true, displayModeBar: false };
+    container.innerHTML = '';
+    const div = document.createElement('div');
+    container.appendChild(div);
+    Plotly.newPlot(div, traces, layout, config);
   }
 
   // -------- Dimensionality Reduction UI --------

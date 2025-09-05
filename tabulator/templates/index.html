@@ -1,8 +1,9 @@
 {% extends 'base.html' %}
 {% block content %}
-  <div class="cards">
-    <!-- Upload Card -->
-    <section class="card" id="upload-card">
+  <div class="two-col">
+    <div class="cards" id="left-column">
+      <!-- Upload Card -->
+      <section class="card" id="upload-card">
       <div class="card-header">
         <button class="card-toggle" aria-expanded="true" aria-controls="upload-body">
           <span class="chevron">▾</span>
@@ -16,11 +17,11 @@
           <button type="submit">Upload</button>
         </form>
       </div>
-    </section>
+      </section>
 
-    {% if dataset_id and info %}
-    <!-- Current Dataset Card -->
-    <section class="card" id="dataset-card">
+      {% if dataset_id and info %}
+      <!-- Current Dataset Card -->
+      <section class="card" id="dataset-card">
       <div class="card-header">
         <button class="card-toggle" aria-expanded="true" aria-controls="dataset-body">
           <span class="chevron">▾</span>
@@ -62,12 +63,30 @@
           </details>
         {% endif %}
       </div>
-    </section>
-    {% endif %}
+      </section>
+      {% endif %}
 
-    {% if dataset_id and info %}
-    <!-- PCA Card -->
-    <section class="card" id="pca-card">
+      <!-- Plots Card (container with Add Plot) -->
+      <section class="card" id="plots-card">
+        <div class="card-header">
+          <button class="card-toggle" aria-expanded="true" aria-controls="plots-body">
+            <span class="chevron">▾</span>
+            <span class="card-title">Plots</span>
+          </button>
+          <div class="card-actions">
+            <button id="add-plot-btn" type="button">Add Plot</button>
+          </div>
+        </div>
+        <div class="card-body" id="plots-body">
+          <div id="plots-container" class="cards"></div>
+        </div>
+      </section>
+    </div>
+
+    <div class="cards" id="right-column">
+      {% if dataset_id and info %}
+      <!-- PCA Card -->
+      <section class="card" id="pca-card">
       <div class="card-header">
         <button class="card-toggle" aria-expanded="true" aria-controls="pca-body">
           <span class="chevron">▾</span>
@@ -86,14 +105,42 @@
           </span>
         </div>
         <div id="pca-loadings" class="plot-preview"></div>
+        <div id="pca-scatter-controls" class="form-row" style="margin-top:8px; display: none;">
+          <span class="field">
+            <label for="pca-dim">Plot</label>
+            <select id="pca-dim">
+              <option value="2d">2D</option>
+              <option value="3d">3D</option>
+            </select>
+          </span>
+          <span class="field">
+            <label for="pca-pc-x">PC X</label>
+            <select id="pca-pc-x"></select>
+          </span>
+          <span class="field">
+            <label for="pca-pc-y">PC Y</label>
+            <select id="pca-pc-y"></select>
+          </span>
+          <span class="field" id="pca-pc-z-field" style="display:none;">
+            <label for="pca-pc-z">PC Z</label>
+            <select id="pca-pc-z"></select>
+          </span>
+          <span class="field">
+            <label for="pca-color">Color by</label>
+            <select id="pca-color">
+              <option value="">None</option>
+            </select>
+          </span>
+        </div>
+        <div id="pca-scatter" class="plot-preview"></div>
         <div id="pca-info" style="color: var(--muted); font-size: 12px; margin-top: 6px;"></div>
       </div>
-    </section>
-    {% endif %}
+      </section>
+      {% endif %}
 
-    {% if dataset_id and info %}
-    <!-- Clustering and Dimensionality Reduction Card -->
-    <section class="card" id="dr-card">
+      {% if dataset_id and info %}
+      <!-- Clustering and Dimensionality Reduction Card -->
+      <section class="card" id="dr-card">
       <div class="card-header">
         <button class="card-toggle" aria-expanded="true" aria-controls="dr-body">
           <span class="chevron">▾</span>
@@ -183,23 +230,8 @@
         <div id="dr-preview" class="plot-preview" style="margin-top:8px;"></div>
         <div id="dr-info" style="color: var(--muted); font-size: 12px; margin-top: 6px;"></div>
       </div>
-    </section>
-    {% endif %}
-
-    <!-- Plots Card (container with Add Plot) -->
-    <section class="card" id="plots-card">
-      <div class="card-header">
-        <button class="card-toggle" aria-expanded="true" aria-controls="plots-body">
-          <span class="chevron">▾</span>
-          <span class="card-title">Plots</span>
-        </button>
-        <div class="card-actions">
-          <button id="add-plot-btn" type="button">Add Plot</button>
-        </div>
-      </div>
-      <div class="card-body" id="plots-body">
-        <div id="plots-container" class="cards"></div>
-      </div>
-    </section>
+      </section>
+      {% endif %}
+    </div>
   </div>
 {% endblock %}

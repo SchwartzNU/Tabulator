@@ -30,7 +30,8 @@ html, body {
 }
 
 .container {
-  max-width: 960px;
+  /* Grow with viewport up to a comfortable desktop max */
+  max-width: clamp(980px, 96vw, 1680px);
   width: 100%;
   margin: 20px auto;
   padding: 0 16px;
@@ -38,6 +39,17 @@ html, body {
 
 /* Cards */
 .cards { display: grid; gap: 14px; }
+.two-col { display: grid; gap: 14px; grid-template-columns: 1fr; align-items: start; }
+/* Larger screens: use two columns with a slightly wider left column */
+@media (min-width: 1024px) {
+  .two-col { grid-template-columns: 1.1fr 0.9fr; }
+}
+@media (min-width: 1280px) {
+  .two-col { grid-template-columns: 1.25fr 1fr; }
+}
+@media (min-width: 1536px) {
+  .two-col { grid-template-columns: 1.35fr 1fr; }
+}
 .card {
   background: var(--panel);
   border: 1px solid var(--border);
