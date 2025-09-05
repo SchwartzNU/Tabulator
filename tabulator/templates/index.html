@@ -80,8 +80,10 @@
       <div class="card-body" id="pca-body">
         <div id="pca-preview" class="plot-preview"></div>
         <div id="pca-controls" class="form-row" style="margin-top:8px; display: none;">
-          <label for="pca-loadings-pc">Loadings for</label>
-          <select id="pca-loadings-pc"></select>
+          <span class="field">
+            <label for="pca-loadings-pc">Loadings for</label>
+            <select id="pca-loadings-pc"></select>
+          </span>
         </div>
         <div id="pca-loadings" class="plot-preview"></div>
         <div id="pca-info" style="color: var(--muted); font-size: 12px; margin-top: 6px;"></div>
@@ -103,57 +105,79 @@
       </div>
       <div class="card-body" id="dr-body">
         <div class="form-row">
-          <label for="dr-method">Method</label>
-          <select id="dr-method">
-            <option value="tsne">t-SNE</option>
-            <option value="umap">UMAP</option>
-          </select>
-          <label for="dr-mode">Features</label>
-          <select id="dr-mode">
-            <option value="all">All numeric columns</option>
-            <option value="pcs">First N PCs</option>
-          </select>
-          <label for="dr-npcs">N</label>
-          <input id="dr-npcs" type="number" min="1" value="10" style="width:80px;" />
-          <label for="dr-color">Color by</label>
-          <select id="dr-color">
-            <option value="">None</option>
-          </select>
+          <span class="field">
+            <label for="dr-method">Method</label>
+            <select id="dr-method">
+              <option value="tsne">t-SNE</option>
+              <option value="umap">UMAP</option>
+            </select>
+          </span>
+          <span class="field">
+            <label for="dr-mode">Features</label>
+            <select id="dr-mode">
+              <option value="all">All numeric columns</option>
+              <option value="pcs">First N PCs</option>
+            </select>
+          </span>
+          <span class="field">
+            <label for="dr-npcs">N</label>
+            <input id="dr-npcs" type="number" min="1" value="10" style="width:80px;" />
+          </span>
+          <span class="field">
+            <label for="dr-color">Color by</label>
+            <select id="dr-color">
+              <option value="">None</option>
+            </select>
+          </span>
         </div>
         <div class="form-row" style="margin-top:8px;">
-          <label for="dr-cluster">Clustering</label>
-          <select id="dr-cluster">
-            <option value="none">None</option>
-            <option value="kmeans">KMeans</option>
-            <option value="dbscan">DBSCAN</option>
-            <option value="agglomerative">Agglomerative</option>
-            <option value="hdbscan">HDBSCAN</option>
-          </select>
-          <span id="dr-kmeans-params">
+          <span class="field">
+            <label for="dr-cluster">Clustering</label>
+            <select id="dr-cluster">
+              <option value="none">None</option>
+              <option value="kmeans">KMeans</option>
+              <option value="dbscan">DBSCAN</option>
+              <option value="agglomerative">Agglomerative</option>
+              <option value="hdbscan">HDBSCAN</option>
+            </select>
+          </span>
+          <span id="dr-kmeans-params" class="field">
             <label for="dr-kmeans-k">k</label>
             <input id="dr-kmeans-k" type="number" min="2" value="5" style="width:80px;" />
           </span>
           <span id="dr-dbscan-params">
-            <label for="dr-dbscan-eps">eps</label>
-            <input id="dr-dbscan-eps" type="number" min="0" step="any" value="0.5" style="width:90px;" />
-            <label for="dr-dbscan-min">min_samples</label>
-            <input id="dr-dbscan-min" type="number" min="1" value="5" style="width:90px;" />
+            <span class="field">
+              <label for="dr-dbscan-eps">eps</label>
+              <input id="dr-dbscan-eps" type="number" min="0" step="any" value="0.5" style="width:90px;" />
+            </span>
+            <span class="field">
+              <label for="dr-dbscan-min">min_samples</label>
+              <input id="dr-dbscan-min" type="number" min="1" value="5" style="width:90px;" />
+            </span>
           </span>
           <span id="dr-agglom-params">
-            <label for="dr-agglom-k">k</label>
-            <input id="dr-agglom-k" type="number" min="2" value="5" style="width:80px;" />
-            <label for="dr-agglom-linkage">linkage</label>
-            <select id="dr-agglom-linkage">
-              <option value="ward">ward</option>
-              <option value="average">average</option>
-              <option value="complete">complete</option>
-            </select>
+            <span class="field">
+              <label for="dr-agglom-k">k</label>
+              <input id="dr-agglom-k" type="number" min="2" value="5" style="width:80px;" />
+            </span>
+            <span class="field">
+              <label for="dr-agglom-linkage">linkage</label>
+              <select id="dr-agglom-linkage">
+                <option value="ward">ward</option>
+                <option value="average">average</option>
+                <option value="complete">complete</option>
+              </select>
+            </span>
           </span>
           <span id="dr-hdbscan-params">
-            <label for="dr-hdbscan-minsize">min_cluster_size</label>
-            <input id="dr-hdbscan-minsize" type="number" min="2" value="10" style="width:110px;" />
-            <label for="dr-hdbscan-minsamples">min_samples</label>
-            <input id="dr-hdbscan-minsamples" type="number" min="1" value="5" style="width:110px;" />
+            <span class="field">
+              <label for="dr-hdbscan-minsize">min_cluster_size</label>
+              <input id="dr-hdbscan-minsize" type="number" min="2" value="10" style="width:110px;" />
+            </span>
+            <span class="field">
+              <label for="dr-hdbscan-minsamples">min_samples</label>
+              <input id="dr-hdbscan-minsamples" type="number" min="1" value="5" style="width:110px;" />
+            </span>
           </span>
         </div>
         <div id="dr-preview" class="plot-preview" style="margin-top:8px;"></div>

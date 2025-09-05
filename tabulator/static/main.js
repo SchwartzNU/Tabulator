@@ -41,12 +41,14 @@
       </div>
       <div class="card-body" id="${bodyId}">
         <div class="form-row">
-          <label for="${id}-type">Plot Type</label>
-          <select id="${id}-type" class="plot-type">
-            <option value="bar">bar</option>
-            <option value="scatter">scatter</option>
-            <option value="heatmap">heatmap</option>
-          </select>
+          <span class="field">
+            <label for="${id}-type">Plot Type</label>
+            <select id="${id}-type" class="plot-type">
+              <option value="bar">bar</option>
+              <option value="scatter">scatter</option>
+              <option value="heatmap">heatmap</option>
+            </select>
+          </span>
         </div>
         <div class="plot-config" id="${id}-config"></div>
         <div class="plot-preview" id="${id}-preview"></div>
@@ -497,40 +499,58 @@
 
     configEl.innerHTML = `
       <div class="form-row">
-        <label for="${xId}">X variable</label>
-        <select id="${xId}"></select>
-        <label for="${yId}">Y variable</label>
-        <select id="${yId}"></select>
-        <label for="${groupId}">Group by</label>
-        <select id="${groupId}">
-          <option value="">None</option>
-        </select>
+        <span class="field">
+          <label for="${xId}">X variable</label>
+          <select id="${xId}"></select>
+        </span>
+        <span class="field">
+          <label for="${yId}">Y variable</label>
+          <select id="${yId}"></select>
+        </span>
+        <span class="field">
+          <label for="${groupId}">Group by</label>
+          <select id="${groupId}">
+            <option value="">None</option>
+          </select>
+        </span>
       </div>
       <div class="form-row" style="margin-top:8px;">
-        <label for="${errxId}">X error</label>
-        <select id="${errxId}">
-          <option value="none">None</option>
-          <option value="sd">SD</option>
-          <option value="sem">SEM</option>
-        </select>
-        <label for="${erryId}">Y error</label>
-        <select id="${erryId}">
-          <option value="none">None</option>
-          <option value="sd">SD</option>
-          <option value="sem">SEM</option>
-        </select>
+        <span class="field">
+          <label for="${errxId}">X error</label>
+          <select id="${errxId}">
+            <option value="none">None</option>
+            <option value="sd">SD</option>
+            <option value="sem">SEM</option>
+          </select>
+        </span>
+        <span class="field">
+          <label for="${erryId}">Y error</label>
+          <select id="${erryId}">
+            <option value="none">None</option>
+            <option value="sd">SD</option>
+            <option value="sem">SEM</option>
+          </select>
+        </span>
         <label class="toggle"><input id="${logxId}" type="checkbox" /> Log X</label>
         <label class="toggle"><input id="${logyId}" type="checkbox" /> Log Y</label>
       </div>
       <div class="form-row" style="margin-top:8px;">
-        <label for="${xminId}">X min</label>
-        <input type="number" id="${xminId}" placeholder="auto" step="any" />
-        <label for="${xmaxId}">X max</label>
-        <input type="number" id="${xmaxId}" placeholder="auto" step="any" />
-        <label for="${yminId}">Y min</label>
-        <input type="number" id="${yminId}" placeholder="auto" step="any" />
-        <label for="${ymaxId}">Y max</label>
-        <input type="number" id="${ymaxId}" placeholder="auto" step="any" />
+        <span class="field">
+          <label for="${xminId}">X min</label>
+          <input type="number" id="${xminId}" placeholder="auto" step="any" />
+        </span>
+        <span class="field">
+          <label for="${xmaxId}">X max</label>
+          <input type="number" id="${xmaxId}" placeholder="auto" step="any" />
+        </span>
+        <span class="field">
+          <label for="${yminId}">Y min</label>
+          <input type="number" id="${yminId}" placeholder="auto" step="any" />
+        </span>
+        <span class="field">
+          <label for="${ymaxId}">Y max</label>
+          <input type="number" id="${ymaxId}" placeholder="auto" step="any" />
+        </span>
         <button type="button" class="secondary" id="plot-${id}-scatter-autoscale">Autoscale</button>
       </div>
     `;
@@ -781,23 +801,33 @@
     const ymaxId = `plot-${id}-ymax`;
     configEl.innerHTML = `
       <div class="form-row">
-        <label for="${valueId}">Display variable</label>
-        <select id="${valueId}"></select>
-        <label for="${groupId}">Group by</label>
-        <select id="${groupId}"></select>
-        <label for="${errId}">Error bars</label>
-        <select id="${errId}">
-          <option value="none">None</option>
-          <option value="sd">SD</option>
-          <option value="sem">SEM</option>
-        </select>
+        <span class="field">
+          <label for="${valueId}">Display variable</label>
+          <select id="${valueId}"></select>
+        </span>
+        <span class="field">
+          <label for="${groupId}">Group by</label>
+          <select id="${groupId}"></select>
+        </span>
+        <span class="field">
+          <label for="${errId}">Error bars</label>
+          <select id="${errId}">
+            <option value="none">None</option>
+            <option value="sd">SD</option>
+            <option value="sem">SEM</option>
+          </select>
+        </span>
         <label class="toggle"><input id="${logId}" type="checkbox" /> Log scale</label>
       </div>
       <div class="form-row" style="margin-top:8px;">
-        <label for="${yminId}">Y min</label>
-        <input type="number" id="${yminId}" placeholder="auto" step="any" />
-        <label for="${ymaxId}">Y max</label>
-        <input type="number" id="${ymaxId}" placeholder="auto" step="any" />
+        <span class="field">
+          <label for="${yminId}">Y min</label>
+          <input type="number" id="${yminId}" placeholder="auto" step="any" />
+        </span>
+        <span class="field">
+          <label for="${ymaxId}">Y max</label>
+          <input type="number" id="${ymaxId}" placeholder="auto" step="any" />
+        </span>
         <button type="button" class="secondary" id="plot-${id}-autoscale">Autoscale</button>
       </div>
     `;
