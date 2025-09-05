@@ -232,6 +232,58 @@
       </div>
       </section>
       {% endif %}
+
+      {% if dataset_id and info %}
+      <!-- Classifier Card -->
+      <section class="card" id="clf-card">
+        <div class="card-header">
+          <button class="card-toggle" aria-expanded="true" aria-controls="clf-body">
+            <span class="chevron">▾</span>
+            <span class="card-title">Classifier</span>
+          </button>
+          <div class="card-actions">
+            <button id="clf-train-btn" type="button">Train</button>
+          </div>
+        </div>
+        <div class="card-body" id="clf-body">
+          <div class="form-row">
+            <span class="field">
+              <label for="clf-label-col">Labels</label>
+              <select id="clf-label-col"></select>
+            </span>
+            <span class="field">
+              <label for="clf-type">Classifier</label>
+              <select id="clf-type">
+                <option value="svm">SVM (linear)</option>
+                <option value="logistic">Logistic</option>
+                <option value="decision_tree">Decision Tree</option>
+                <option value="random_forest">Random Forest</option>
+                <option value="neural_net">Neural Net</option>
+                <option value="cnn">CNN</option>
+              </select>
+            </span>
+            <span class="field">
+              <label for="clf-test-frac">Test fraction</label>
+              <input id="clf-test-frac" type="number" min="0.05" max="0.5" step="0.05" value="0.2" />
+            </span>
+            <span class="field">
+              <label for="clf-iters">Iterations</label>
+              <input id="clf-iters" type="number" min="1" max="500" step="1" value="50" />
+            </span>
+            <span class="field">
+              <label class="toggle" for="clf-early"><input id="clf-early" type="checkbox" checked /> Early stop</label>
+            </span>
+            <span class="field">
+              <label for="clf-patience">Patience</label>
+              <input id="clf-patience" type="number" min="1" max="50" step="1" value="5" />
+            </span>
+          </div>
+          <div id="clf-learning" class="plot-preview" style="margin-top:8px;"></div>
+          <div id="clf-metrics" style="color: var(--muted); font-size: 12px; margin-top: 6px;"></div>
+          <div id="clf-confusion" class="plot-preview" style="margin-top:8px;"></div>
+        </div>
+      </section>
+      {% endif %}
     </div>
   </div>
 {% endblock %}

@@ -81,6 +81,7 @@
     setupPlotsUI();
     setupPCA();
     setupDR();
+    setupClassifier();
   });
 
   // -------- Plot helpers --------
@@ -675,6 +676,120 @@
       showlegend: !!colors && !colors.every(v => typeof v === 'number'),
     };
     renderPlot(container, points, layout, { displayModeBar: false }, 'dimred');
+  }
+
+  // -------- Classifier UI --------
+  async function setupClassifier() {
+    const btn = document.getElementById('clf-train-btn');
+    const labelSel = document.getElementById('clf-label-col');
+    const typeSel = document.getElementById('clf-type');
+    const testFracInp = document.getElementById('clf-test-frac');
+    const learnDiv = document.getElementById('clf-learning');
+    const metricsDiv = document.getElementById('clf-metrics');
+    const confDiv = document.getElementById('clf-confusion');
+    const itersInp = document.getElementById('clf-iters');
+    const earlyChk = document.getElementById('clf-early');
+    const patienceInp = document.getElementById('clf-patience');
+    if (!btn || !labelSel) return;
+
+    // Populate label column choices (all columns)
+    try {
+      const meta = await fetchJSON('/api/columns');
+      const cols = meta.columns || [];
+      labelSel.innerHTML = '';
+      for (const c of cols) {
+        const opt = document.createElement('option');
+        opt.value = opt.textContent = c.name;
+        labelSel.appendChild(opt);
+      }
+    } catch {}
+
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      const prev = btn.textContent;
+      btn.textContent = 'Training…';
+      metricsDiv.textContent = '';
+      learnDiv.innerHTML = '';
+      confDiv.innerHTML = '';
+      try {
+        const body = {
+          label: labelSel.value,
+          clf: typeSel.value,
+          test_frac: parseFloat(testFracInp.value),
+          max_iters: Math.max(1, parseInt(itersInp?.value || '50', 10)),
+          patience: Math.max(1, parseInt(patienceInp?.value || '5', 10)),
+          early_stop: !!(earlyChk && earlyChk.checked),
+        };
+        const res = await fetch('/api/classify/train', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        if (!res.ok) {
+          let detail = '';
+          try { const j = await res.json(); if (j && j.error) detail = ` (${j.error})`; } catch {}
+          throw new Error(`Request failed: ${res.status}${detail}`);
+        }
+        const data = await res.json();
+        renderLearningCurve(learnDiv, data.history, data.classes);
+        const acc = (typeof data.test_accuracy === 'number' && isFinite(data.test_accuracy)) ? (data.test_accuracy * 100).toFixed(1) : '?';
+        const bestIt = data.best_iteration || '?';
+        const ran = Array.isArray(data?.history?.iter) ? data.history.iter.length : null;
+        const early = !!data.stopped_early;
+        const runNote = early ? `Stopped early at ${ran} iters` : (ran ? `Ran ${ran} iters` : '');
+        metricsDiv.textContent = `Classifier: ${data.classifier} · Best iter: ${bestIt} · Test accuracy: ${acc}%` + (runNote ? ` · ${runNote}` : '');
+        if (Array.isArray(data.confusion_matrix) && Array.isArray(data.classes)) {
+          renderConfusion(confDiv, data.confusion_matrix, data.classes);
+        }
+      } catch (e) {
+        let msg = String(e);
+        if (msg.includes('(missing_dep_tensorflow)')) msg += `\nInstall tensorflow to use CNNs.`;
+        learnDiv.innerHTML = `<div style=\"color: var(--muted); white-space: pre-wrap;\">${msg}</div>`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = prev;
+      }
+    });
+  }
+
+  function renderLearningCurve(container, history, classes) {
+    const it = Array.isArray(history?.iter) ? history.iter : [];
+    const tr = Array.isArray(history?.train_error) ? history.train_error : [];
+    const vl = Array.isArray(history?.val_error) ? history.val_error : [];
+    const traces = [
+      { type: 'scatter', mode: 'lines+markers', name: 'Train error', x: it, y: tr, line: { color: '#60a5fa' }, marker: { size: 6 } },
+      { type: 'scatter', mode: 'lines+markers', name: 'Validation error', x: it, y: vl, line: { color: '#ef4444' }, marker: { size: 6 } }
+    ];
+    // Add random-chance baseline error = 1 - 1/num_classes
+    const nC = Array.isArray(classes) ? classes.length : null;
+    if (typeof nC === 'number' && nC > 1) {
+      const baseErr = 1 - 1 / nC;
+      const xline = it.length >= 2 ? [it[0], it[it.length - 1]] : (it.length === 1 ? [it[0], it[0] + 1] : [0, 1]);
+      const yline = [baseErr, baseErr];
+      traces.push({ type: 'scatter', mode: 'lines', name: 'Random chance', x: xline, y: yline, line: { color: '#9ca3af', dash: 'dot' } });
+    }
+    const layout = {
+      height: 280,
+      margin: { l: 60, r: 20, t: 10, b: 40 },
+      xaxis: { title: 'Iteration', gridcolor: '#f3f4f6' },
+      yaxis: { title: 'Error (1 - accuracy)', rangemode: 'tozero', gridcolor: '#f3f4f6' },
+      plot_bgcolor: '#ffffff', paper_bgcolor: '#ffffff', showlegend: true
+    };
+    renderPlot(container, traces, layout, { displayModeBar: false }, 'classifier-learning');
+  }
+
+  function renderConfusion(container, matrix, classes) {
+    const z = matrix;
+    const x = classes; const y = classes;
+    const trace = { type: 'heatmap', z, x, y, colorscale: 'Blues', colorbar: { title: 'Count' } };
+    const layout = {
+      height: 320,
+      margin: { l: 80, r: 20, t: 10, b: 80 },
+      xaxis: { title: 'Predicted', automargin: true },
+      yaxis: { title: 'True', automargin: true },
+      plot_bgcolor: '#ffffff', paper_bgcolor: '#ffffff'
+    };
+    renderPlot(container, [trace], layout, { displayModeBar: false }, 'confusion');
   }
 
   async function buildScatterConfig(card, configEl, previewEl) {

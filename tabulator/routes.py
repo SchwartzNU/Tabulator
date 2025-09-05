@@ -252,6 +252,304 @@ def api_pca_scores():
     })
 
 
+@bp.post("/api/classify/train")
+def api_classify_train():
+    """Train a classifier on tabular features with a stratified test split.
+
+    JSON body:
+    - label: column name to use as labels
+    - clf: one of ['svm','logistic','decision_tree','random_forest','neural_net','cnn']
+    - test_frac: float in (0,1)
+    - max_iters: optional int (default 50)
+    - patience: optional int (default 5)
+    - random_state: optional int
+    Returns history of train/val error per iteration, best iteration, and test metrics.
+    """
+    try:
+        req = request.get_json(force=True)
+    except Exception:
+        return jsonify({"error": "bad_json"}), 400
+
+    label_col = (req or {}).get("label")
+    clf_name = (req or {}).get("clf", "svm").lower()
+    test_frac = float((req or {}).get("test_frac", 0.2))
+    max_iters = int((req or {}).get("max_iters", 50))
+    patience = int((req or {}).get("patience", 5))
+    early_stop = bool((req or {}).get("early_stop", True))
+    random_state = int((req or {}).get("random_state", 42))
+
+    if not label_col:
+        return jsonify({"error": "missing_label"}), 400
+    if clf_name not in {"svm", "logistic", "decision_tree", "random_forest", "neural_net", "cnn"}:
+        return jsonify({"error": "bad_classifier"}), 400
+    if not (0 < test_frac < 1):
+        return jsonify({"error": "bad_test_frac"}), 400
+
+    dataset_id = session.get("dataset_id")
+    ds = store.get(dataset_id) if dataset_id else None
+    if ds is None:
+        return jsonify({"error": "no_dataset"}), 404
+
+    import numpy as np
+    import pandas as pd
+    from sklearn.model_selection import StratifiedShuffleSplit
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.metrics import accuracy_score, confusion_matrix
+    from sklearn.linear_model import SGDClassifier
+    from sklearn.neural_network import MLPClassifier
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.tree import DecisionTreeClassifier
+
+    df = ds.df
+    if label_col not in df.columns:
+        return jsonify({"error": "label_not_found"}), 400
+
+    # Build features (numeric only) and labels
+    Xdf = df.select_dtypes(include=["number"]).copy()
+    # drop common ID-like fields and the label if numeric
+    drop_names = {"segmentID", "segment_ID", label_col}
+    feat_cols = [c for c in Xdf.columns if str(c) not in drop_names]
+    if not feat_cols:
+        return jsonify({"error": "no_features"}), 400
+
+    y_series = df[label_col]
+    # Align frames and drop rows with NaNs across features or missing label
+    work = pd.DataFrame({"__y": y_series})
+    for c in feat_cols:
+        work[c] = df[c]
+    work = work.dropna(axis=0, how="any")
+    if work.shape[0] < 2:
+        return jsonify({"error": "not_enough_rows"}), 400
+
+    # Filter classes with too few samples for stratified splits
+    y_raw = work["__y"].astype(str)
+    counts = y_raw.value_counts()
+    # Need at least 2 per class in the final training set; ensure after test split there are >=2 per class in train
+    min_required = int(np.ceil(2.0 / max(1e-6, (1.0 - test_frac))))
+    keep_labels = set(counts[counts >= min_required].index.astype(str))
+    excluded_labels = [str(k) for k in counts[counts < min_required].index.tolist()]
+    # Subset to kept labels only
+    work = work[y_raw.isin(keep_labels)]
+    if work.shape[0] < 2 or len(keep_labels) < 2:
+        return jsonify({
+            "error": "not_enough_classes",
+            "detail": "Too few samples per class after filtering",
+            "min_required_per_class": int(min_required),
+            "excluded_labels": excluded_labels,
+        }), 400
+
+    # Encode labels as integers with mapping
+    y_raw = work["__y"].astype(str)
+    classes_, y_enc = np.unique(y_raw, return_inverse=True)
+    X = work[feat_cols].to_numpy(dtype=float)
+    y = y_enc.astype(int)
+
+    # Stratified split
+    n_splits = 1
+    sss = StratifiedShuffleSplit(n_splits=n_splits, test_size=test_frac, random_state=random_state)
+    try:
+        train_idx, test_idx = next(sss.split(X, y))
+    except ValueError as e:
+        # Edge case: still too few per class; relax by requiring min 3 and refilter
+        min_required = max(min_required, 3)
+        keep_labels = set(pd.Series(y_raw).value_counts()[lambda s: s >= min_required].index.astype(str))
+        work2 = work[y_raw.isin(keep_labels)]
+        if work2.shape[0] < 2 or len(keep_labels) < 2:
+            return jsonify({"error": "stratify_failed", "detail": str(e)}), 400
+        y_raw2 = work2["__y"].astype(str)
+        classes_, y_enc = np.unique(y_raw2, return_inverse=True)
+        X = work2[feat_cols].to_numpy(dtype=float)
+        y = y_enc.astype(int)
+        train_idx, test_idx = next(sss.split(X, y))
+    X_train, X_test = X[train_idx], X[test_idx]
+    y_train, y_test = y[train_idx], y[test_idx]
+
+    # Standardize features
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(X_train)
+    X_test = scaler.transform(X_test)
+
+    # Further split a validation set from training for early stopping
+    # Use 20% of training as validation, stratified
+    val_frac = min(0.2, max(0.1, 0.2))
+    # Validation split (stratified if feasible)
+    try:
+        sss2 = StratifiedShuffleSplit(n_splits=1, test_size=val_frac, random_state=random_state)
+        tr_idx, val_idx = next(sss2.split(X_train, y_train))
+    except ValueError:
+        # Fallback: simple shuffle split without stratification
+        from sklearn.model_selection import ShuffleSplit
+        ss = ShuffleSplit(n_splits=1, test_size=val_frac, random_state=random_state)
+        tr_idx, val_idx = next(ss.split(X_train, y_train))
+    X_tr, X_val = X_train[tr_idx], X_train[val_idx]
+    y_tr, y_val = y_train[tr_idx], y_train[val_idx]
+
+    # Initialize classifier
+    n_classes = int(len(classes_))
+    iters = []
+    train_err = []
+    val_err = []
+    best_val = float("inf")
+    best_iter = 0
+    no_improve = 0
+    stopped_early = False
+
+    def record(i, model):
+        iters.append(int(i))
+        pred_tr = model.predict(X_tr)
+        pred_val = model.predict(X_val)
+        tr_err = 1.0 - float(accuracy_score(y_tr, pred_tr))
+        vl_err = 1.0 - float(accuracy_score(y_val, pred_val))
+        train_err.append(tr_err)
+        val_err.append(vl_err)
+        return tr_err, vl_err
+
+    if clf_name == "svm":
+        clf = SGDClassifier(loss="hinge", random_state=random_state)
+        # Use partial_fit for epochs
+        clf.partial_fit(X_tr[:1], y_tr[:1], classes=np.arange(n_classes))  # initialize
+        for i in range(1, max_iters + 1):
+            clf.partial_fit(X_tr, y_tr)
+            _, vl = record(i, clf)
+            if vl + 1e-9 < best_val:
+                best_val = vl; best_iter = i; no_improve = 0
+            else:
+                no_improve += 1
+                if early_stop and no_improve >= patience:
+                    stopped_early = True
+                    break
+        # Re-train to best_iter for clean state
+        clf_best = SGDClassifier(loss="hinge", random_state=random_state)
+        clf_best.partial_fit(X_tr[:1], y_tr[:1], classes=np.arange(n_classes))
+        for _ in range(best_iter):
+            clf_best.partial_fit(X_tr, y_tr)
+        final_model = clf_best
+    elif clf_name == "logistic":
+        clf = SGDClassifier(loss="log_loss", random_state=random_state)
+        clf.partial_fit(X_tr[:1], y_tr[:1], classes=np.arange(n_classes))
+        for i in range(1, max_iters + 1):
+            clf.partial_fit(X_tr, y_tr)
+            _, vl = record(i, clf)
+            if vl + 1e-9 < best_val:
+                best_val = vl; best_iter = i; no_improve = 0
+            else:
+                no_improve += 1
+                if early_stop and no_improve >= patience:
+                    stopped_early = True
+                    break
+        clf_best = SGDClassifier(loss="log_loss", random_state=random_state)
+        clf_best.partial_fit(X_tr[:1], y_tr[:1], classes=np.arange(n_classes))
+        for _ in range(best_iter):
+            clf_best.partial_fit(X_tr, y_tr)
+        final_model = clf_best
+    elif clf_name == "neural_net":
+        clf = MLPClassifier(hidden_layer_sizes=(64, 64), activation="relu", solver="adam", learning_rate_init=0.001,
+                            random_state=random_state, max_iter=1, warm_start=True)
+        for i in range(1, max_iters + 1):
+            clf.fit(X_tr, y_tr)
+            _, vl = record(i, clf)
+            if vl + 1e-9 < best_val:
+                best_val = vl; best_iter = i; no_improve = 0
+            else:
+                no_improve += 1
+                if early_stop and no_improve >= patience:
+                    stopped_early = True
+                    break
+        # Retrain with best_iter epochs
+        final_model = MLPClassifier(hidden_layer_sizes=(64, 64), activation="relu", solver="adam", learning_rate_init=0.001,
+                                   random_state=random_state, max_iter=1, warm_start=True)
+        for _ in range(best_iter):
+            final_model.fit(X_tr, y_tr)
+    elif clf_name == "random_forest":
+        step = max(5, int(max_iters // 5) * 2)  # add trees in chunks
+        n_estimators = 0
+        clf = RandomForestClassifier(n_estimators=0, warm_start=True, random_state=random_state)
+        for i in range(1, max_iters + 1):
+            n_estimators += step
+            clf.set_params(n_estimators=n_estimators)
+            clf.fit(X_tr, y_tr)
+            _, vl = record(i, clf)
+            if vl + 1e-9 < best_val:
+                best_val = vl; best_iter = i; no_improve = 0
+            else:
+                no_improve += 1
+                if early_stop and no_improve >= patience:
+                    stopped_early = True
+                    break
+        # Retrain to best_iter
+        final_model = RandomForestClassifier(n_estimators=best_iter * step, random_state=random_state)
+        final_model.fit(X_tr, y_tr)
+    elif clf_name == "decision_tree":
+        clf = DecisionTreeClassifier(random_state=random_state)
+        clf.fit(X_tr, y_tr)
+        record(1, clf)
+        best_iter = 1
+        final_model = clf
+    else:  # cnn
+        try:
+            import tensorflow as tf  # type: ignore
+        except Exception:
+            return jsonify({"error": "missing_dep_tensorflow"}), 501
+        # Minimal 1D CNN over features
+        n_feat = X_tr.shape[1]
+        model = tf.keras.Sequential([
+            tf.keras.layers.Input(shape=(n_feat, 1)),
+            tf.keras.layers.Conv1D(16, 3, padding='same', activation='relu'),
+            tf.keras.layers.Conv1D(16, 3, padding='same', activation='relu'),
+            tf.keras.layers.GlobalAveragePooling1D(),
+            tf.keras.layers.Dense(max(32, n_classes * 2), activation='relu'),
+            tf.keras.layers.Dense(n_classes, activation='softmax'),
+        ])
+        model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+        Xtr_c = X_tr.reshape((-1, n_feat, 1))
+        Xval_c = X_val.reshape((-1, n_feat, 1))
+        best_val = float('inf'); best_iter = 0; no_improve = 0
+        for i in range(1, max_iters + 1):
+            model.fit(Xtr_c, y_tr, epochs=1, verbose=0)
+            # Evaluate
+            tr_acc = float(model.evaluate(Xtr_c, y_tr, verbose=0)[1])
+            val_acc = float(model.evaluate(Xval_c, y_val, verbose=0)[1])
+            iters.append(i)
+            train_err.append(1.0 - tr_acc)
+            val_err.append(1.0 - val_acc)
+            vl = 1.0 - val_acc
+            if vl + 1e-9 < best_val:
+                best_val = vl; best_iter = i; no_improve = 0
+            else:
+                no_improve += 1
+                if early_stop and no_improve >= patience:
+                    stopped_early = True
+                    break
+        final_model = model
+
+    # Evaluate on test with the final_model
+    if clf_name == "cnn":
+        Xts = X_test.reshape((-1, X_test.shape[1], 1))
+        test_pred = final_model.predict(Xts, verbose=0).argmax(axis=1)
+    else:
+        test_pred = final_model.predict(X_test)
+    test_acc = float(accuracy_score(y_test, test_pred))
+    cm = confusion_matrix(y_test, test_pred, labels=np.arange(n_classes)).tolist()
+
+    return jsonify({
+        "classes": [str(c) for c in classes_],
+        "label": str(label_col),
+        "features": [str(c) for c in feat_cols],
+        "min_required_per_class": int(min_required),
+        "excluded_labels": excluded_labels,
+        "history": {
+            "iter": iters,
+            "train_error": train_err,
+            "val_error": val_err,
+        },
+        "best_iteration": int(best_iter),
+        "test_accuracy": test_acc,
+        "confusion_matrix": cm,
+        "classifier": clf_name,
+        "stopped_early": stopped_early,
+    })
+
+
 @bp.get("/api/dr")
 def api_dimred():
     """2D dimensionality reduction via t-SNE or UMAP, with optional clustering on the 2D embedding.
