@@ -66,6 +66,330 @@ def api_columns():
     return jsonify({"columns": cols})
 
 
+@bp.get("/api/pca")
+def api_pca():
+    """Run PCA on all numeric columns and return explained variance ratios.
+
+    - Uses centered data (mean subtraction per feature).
+    - Drops rows with NaNs across selected numeric columns.
+    - Returns explained_variance_ratio per component and cumulative.
+    """
+    dataset_id = session.get("dataset_id")
+    ds = store.get(dataset_id) if dataset_id else None
+    if ds is None:
+        return jsonify({"error": "no_dataset"}), 404
+    df = ds.df
+
+    try:
+        import numpy as np
+        import pandas as pd
+    except Exception:
+        return jsonify({"error": "missing_deps"}), 500
+
+    # Select numeric columns only
+    num_df = df.select_dtypes(include=["number"]).copy()
+    # Drop identifier-like numeric columns if present by common names
+    drop_names = {"segmentID", "segment_ID"}
+    keep_cols = [c for c in num_df.columns if str(c) not in drop_names]
+    num_df = num_df[keep_cols]
+
+    if num_df.shape[1] < 1:
+        return jsonify({"error": "no_numeric_columns"}), 400
+
+    # Drop rows with NaNs
+    num_df = num_df.dropna(axis=0, how="any")
+    n_samples = int(num_df.shape[0])
+    n_features = int(num_df.shape[1])
+    if n_samples < 2:
+        return jsonify({"error": "not_enough_rows", "rows": n_samples}), 400
+
+    # Center and standardize to z-scores (per-feature mean 0, sd 1)
+    X = num_df.to_numpy(dtype=float)
+    mean = np.nanmean(X, axis=0, keepdims=True)
+    Xc = X - mean
+    # Sample standard deviation (ddof=1), consistent with explained variance computation
+    sd = Xc.std(axis=0, ddof=1, keepdims=False)
+    # Drop constant features (sd <= 0 or non-finite)
+    keep_mask = np.isfinite(sd) & (sd > 0)
+    dropped = [str(c) for c, k in zip(num_df.columns, keep_mask) if not bool(k)]
+    if not np.any(keep_mask):
+        return jsonify({"error": "no_variable_features"}), 400
+    Xc = Xc[:, keep_mask]
+    sd = sd[keep_mask]
+    cols_kept = [str(c) for c, k in zip(num_df.columns, keep_mask) if bool(k)]
+    n_features = int(len(cols_kept))
+    Xz = Xc / sd
+    try:
+        # SVD on standardized data
+        U, S, Vt = np.linalg.svd(Xz, full_matrices=False)
+        # Explained variance per component
+        explained_variance = (S ** 2) / (n_samples - 1)
+        total_var = explained_variance.sum()
+        if not np.isfinite(total_var) or total_var <= 0:
+            return jsonify({"error": "degenerate_variance"}), 400
+        evr = (explained_variance / total_var).tolist()
+        # Cumulative
+        cum = np.cumsum(explained_variance / total_var).tolist()
+    except Exception as e:
+        return jsonify({"error": "pca_failed", "detail": str(e)}), 500
+
+    return jsonify({
+        "n_samples": n_samples,
+        "n_features": n_features,
+        "columns": cols_kept,
+        "explained_variance_ratio": evr,
+        "cumulative_ratio": cum,
+        "components": int(Vt.shape[0]),
+        "loadings": Vt.tolist(),  # shape: [components][n_features]
+        "standardized": True,
+        "dropped_constant_columns": dropped,
+    })
+
+
+@bp.get("/api/dr")
+def api_dimred():
+    """2D dimensionality reduction via t-SNE or UMAP, with optional clustering on the 2D embedding.
+
+    Query params:
+    - method: 'tsne' or 'umap'
+    - mode: 'all' (all numeric z-scored features) or 'pcs'
+    - n_pcs: integer > 0 (used only when mode='pcs')
+    - color: optional column name for coloring
+    """
+    method = (request.args.get("method") or "").lower()
+    mode = (request.args.get("mode") or "all").lower()
+    try:
+        n_pcs = int(request.args.get("n_pcs", "10"))
+    except Exception:
+        n_pcs = 10
+    color_col = request.args.get("color")
+    # Clustering params
+    cluster = (request.args.get("cluster") or "none").lower()
+    try:
+        kmeans_k = int(request.args.get("kmeans_k", "5"))
+    except Exception:
+        kmeans_k = 5
+    try:
+        dbscan_eps = float(request.args.get("dbscan_eps", "0.5"))
+    except Exception:
+        dbscan_eps = 0.5
+    try:
+        dbscan_min_samples = int(request.args.get("dbscan_min_samples", "5"))
+    except Exception:
+        dbscan_min_samples = 5
+    try:
+        agglom_k = int(request.args.get("agglom_k", "5"))
+    except Exception:
+        agglom_k = 5
+    agglom_linkage = (request.args.get("agglom_linkage") or "ward").lower()
+    try:
+        hdbscan_min_cluster_size = int(request.args.get("hdbscan_min_cluster_size", "10"))
+    except Exception:
+        hdbscan_min_cluster_size = 10
+    try:
+        hdbscan_min_samples = int(request.args.get("hdbscan_min_samples", "5"))
+    except Exception:
+        hdbscan_min_samples = 5
+
+    if method not in {"tsne", "umap"}:
+        return jsonify({"error": "bad_method"}), 400
+    if mode not in {"all", "pcs"}:
+        return jsonify({"error": "bad_mode"}), 400
+
+    dataset_id = session.get("dataset_id")
+    ds = store.get(dataset_id) if dataset_id else None
+    if ds is None:
+        return jsonify({"error": "no_dataset"}), 404
+    df = ds.df
+
+    import numpy as np
+    import pandas as pd
+
+    # Build numeric feature matrix, excluding common ID-like columns
+    num_df = df.select_dtypes(include=["number"]).copy()
+    drop_names = {"segmentID", "segment_ID"}
+    feat_cols = [c for c in num_df.columns if str(c) not in drop_names]
+    num_df = num_df[feat_cols]
+    if num_df.shape[1] < 1:
+        return jsonify({"error": "no_numeric_columns"}), 400
+
+    # Row mask: drop rows with any NaNs in features
+    clean = num_df.dropna(axis=0, how="any")
+    if clean.shape[0] < 2:
+        return jsonify({"error": "not_enough_rows", "rows": int(clean.shape[0])}), 400
+
+    # Keep parallel slices for IDs and optional color column
+    # Reindex original df to the cleaned index to align rows
+    idx = clean.index
+    id_source = None
+    for cname in ("segmentID", "cell_name"):
+        if cname in df.columns:
+            id_source = cname
+            break
+    if id_source is not None:
+        id_series = df.loc[idx, id_source]
+    else:
+        id_series = pd.Series([""] * len(idx), index=idx)
+    if color_col and color_col in df.columns:
+        color_series = df.loc[idx, color_col]
+    else:
+        color_series = None
+
+    # Standardize features to z-scores; drop constant features
+    X = clean.to_numpy(dtype=float)
+    X = X - np.nanmean(X, axis=0, keepdims=True)
+    sd = X.std(axis=0, ddof=1)
+    keep_mask = np.isfinite(sd) & (sd > 0)
+    if not np.any(keep_mask):
+        return jsonify({"error": "no_variable_features"}), 400
+    Xz = X[:, keep_mask] / sd[keep_mask]
+    cols_kept = [str(c) for c, k in zip(clean.columns, keep_mask) if bool(k)]
+
+    # Optional PCA preprocessing
+    if mode == "pcs":
+        try:
+            # SVD on standardized data
+            U, S, Vt = np.linalg.svd(Xz, full_matrices=False)
+            k = min(int(n_pcs), Vt.shape[0])
+            if k < 1:
+                k = 1
+            comps = Vt[:k, :].T  # shape (p, k)
+            Xdr = Xz @ comps  # (n, k)
+            preproc = {"mode": "pcs", "n_pcs": int(k)}
+        except Exception as e:
+            return jsonify({"error": "pca_failed", "detail": str(e)}), 500
+    else:
+        Xdr = Xz
+        preproc = {"mode": "all", "n_pcs": None}
+
+    # Compute embedding
+    n = Xdr.shape[0]
+    if method == "tsne":
+        try:
+            from sklearn.manifold import TSNE  # type: ignore
+        except Exception:
+            return jsonify({"error": "missing_dep_sklearn"}), 501
+        # Choose a safe perplexity default
+        try:
+            per_arg = request.args.get("perplexity")
+            if per_arg is not None:
+                perplexity = float(per_arg)
+            else:
+                perplexity = max(5.0, min(30.0, (n - 1) / 3.0))
+            # sklearn requires perplexity < n_samples
+            perplexity = min(perplexity, max(1.0, n - 1.0 - 1e-6))
+        except Exception:
+            perplexity = max(5.0, min(30.0, (n - 1) / 3.0))
+        tsne = TSNE(n_components=2, perplexity=perplexity, learning_rate="auto", init="pca", random_state=42)
+        Y = tsne.fit_transform(Xdr)
+        method_meta = {"method": "tsne", "perplexity": float(perplexity)}
+    else:  # umap
+        try:
+            import umap  # type: ignore
+        except Exception:
+            return jsonify({"error": "missing_dep_umap"}), 501
+        n_neighbors = int(request.args.get("n_neighbors", 15))
+        min_dist = float(request.args.get("min_dist", 0.1))
+        reducer = umap.UMAP(n_components=2, n_neighbors=n_neighbors, min_dist=min_dist, random_state=42)
+        Y = reducer.fit_transform(Xdr)
+        method_meta = {"method": "umap", "n_neighbors": int(n_neighbors), "min_dist": float(min_dist)}
+
+    xs = Y[:, 0].astype(float).tolist()
+    ys = Y[:, 1].astype(float).tolist()
+    ids = [str(v) for v in id_series.tolist()]
+    if color_series is not None:
+        # Preserve raw values; frontend decides how to map
+        colors = color_series.tolist()
+        # Ensure JSON-serializable
+        colors = [None if pd.isna(v) else (float(v) if isinstance(v, (int, float)) else str(v)) for v in colors]
+    else:
+        colors = None
+
+    # Optional clustering on the 2D embedding
+    cluster_labels = None
+    cluster_algo = None
+    n_clusters = None
+    n_noise = None
+    silhouette = None
+    if cluster in {"kmeans", "dbscan", "agglomerative", "hdbscan"}:
+        try:
+            if cluster == "kmeans":
+                from sklearn.cluster import KMeans  # type: ignore
+                k = int(max(2, kmeans_k))
+                model = KMeans(n_clusters=k, n_init=10, random_state=42)
+                labels = model.fit_predict(Y)
+                cluster_algo = f"kmeans{k}"
+            elif cluster == "dbscan":
+                from sklearn.cluster import DBSCAN  # type: ignore
+                model = DBSCAN(eps=float(dbscan_eps), min_samples=int(dbscan_min_samples))
+                labels = model.fit_predict(Y)
+                cluster_algo = f"dbscan"
+            elif cluster == "agglomerative":
+                from sklearn.cluster import AgglomerativeClustering  # type: ignore
+                k = int(max(2, agglom_k))
+                link = agglom_linkage if agglom_linkage in {"ward", "average", "complete"} else "ward"
+                # Ward requires euclidean and more than 1 cluster
+                if link == "ward" and k < 2:
+                    k = 2
+                model = AgglomerativeClustering(n_clusters=k, linkage=link)
+                labels = model.fit_predict(Y)
+                cluster_algo = f"agglomerative_{link}{k}"
+            else:  # hdbscan
+                try:
+                    import hdbscan  # type: ignore
+                except Exception:
+                    return jsonify({"error": "missing_dep_hdbscan"}), 501
+                mcs = int(max(2, hdbscan_min_cluster_size))
+                ms = int(max(1, hdbscan_min_samples))
+                model = hdbscan.HDBSCAN(min_cluster_size=mcs, min_samples=ms)
+                labels = model.fit_predict(Y)
+                cluster_algo = "hdbscan"
+            cluster_labels = [int(v) for v in labels.tolist()]
+            # Cluster stats
+            try:
+                import numpy as np
+                labels_arr = np.asarray(cluster_labels)
+                noise_mask = labels_arr == -1
+                n_noise = int(noise_mask.sum()) if noise_mask.any() else 0
+                # Exclude noise for silhouette and cluster counting
+                valid_mask = ~noise_mask if noise_mask.any() else np.ones_like(labels_arr, dtype=bool)
+                unique = np.unique(labels_arr[valid_mask])
+                n_clusters = int(len(unique))
+                if n_clusters >= 2 and int(valid_mask.sum()) >= 2:
+                    try:
+                        from sklearn.metrics import silhouette_score  # type: ignore
+                        silhouette = float(silhouette_score(Y[valid_mask], labels_arr[valid_mask], metric="euclidean"))
+                    except Exception:
+                        silhouette = None
+            except Exception:
+                n_clusters = None
+                n_noise = None
+                silhouette = None
+        except Exception:
+            cluster_labels = None
+            cluster_algo = None
+            n_clusters = None
+            n_noise = None
+            silhouette = None
+
+    return jsonify({
+        "n_points": int(len(xs)),
+        "x": xs,
+        "y": ys,
+        "id": ids,
+        "color_values": colors,
+        "color_column": str(color_col) if color_series is not None else None,
+        "features_used": cols_kept,
+        "preprocess": preproc,
+        **method_meta,
+        "cluster_labels": cluster_labels,
+        "cluster_algorithm": cluster_algo,
+        "n_clusters": n_clusters,
+        "n_noise": n_noise,
+        "silhouette": silhouette,
+    })
+
+
 @bp.get("/api/plot/bar")
 def api_plot_bar():
     value = request.args.get("value")

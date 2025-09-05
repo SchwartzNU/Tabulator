@@ -77,12 +77,21 @@
   onReady(() => {
     setupCollapsibles(document);
     setupPlotsUI();
+    setupPCA();
+    setupDR();
   });
 
   // -------- Plot helpers --------
   async function fetchJSON(url) {
     const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
-    if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+    if (!res.ok) {
+      let detail = '';
+      try {
+        const body = await res.json();
+        if (body && body.error) detail = ` (${body.error})`;
+      } catch {}
+      throw new Error(`Request failed: ${res.status}${detail}`);
+    }
     return await res.json();
   }
 
@@ -105,6 +114,358 @@
 
     typeSel.addEventListener('change', renderForType);
     await renderForType();
+  }
+
+  // -------- PCA UI --------
+  function setupPCA() {
+    const btn = document.getElementById('run-pca-btn');
+    const preview = document.getElementById('pca-preview');
+    const controls = document.getElementById('pca-controls');
+    const pcSelect = document.getElementById('pca-loadings-pc');
+    const info = document.getElementById('pca-info');
+    if (!btn || !preview) return;
+
+    let pcaData = null;
+
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      const prevLabel = btn.textContent;
+      btn.textContent = 'Running…';
+      info.textContent = '';
+      try {
+        const data = await fetchJSON('/api/pca');
+        pcaData = data;
+        renderPCAElbow(preview, data);
+        setupLoadingsControls(controls, pcSelect, data);
+        renderPCALoadings(document.getElementById('pca-loadings'), data, 0);
+        if (info && data) {
+          const ns = data.n_samples ?? '?';
+          const nf = data.n_features ?? '?';
+          info.textContent = `Computed on ${ns} rows × ${nf} numeric columns.`;
+        }
+      } catch (e) {
+        preview.innerHTML = `<div style=\"color: var(--muted);\">${String(e)}</div>`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = prevLabel;
+      }
+    });
+  }
+
+  function renderPCAElbow(container, data) {
+    const evr = Array.isArray(data.explained_variance_ratio) ? data.explained_variance_ratio : [];
+    const cum = Array.isArray(data.cumulative_ratio) ? data.cumulative_ratio : [];
+    const n = evr.length;
+    const x = Array.from({ length: n }, (_, i) => i + 1);
+    const xlabels = x.map(i => `PC ${i}`);
+
+    const bar = {
+      type: 'bar',
+      x,
+      y: evr,
+      marker: { color: '#60a5fa' },
+      name: 'Explained variance',
+      hovertemplate: 'PC %{x}<br>%{y:.3f} of variance<extra></extra>'
+    };
+    const line = {
+      type: 'scatter',
+      mode: 'lines+markers',
+      x,
+      y: cum.length === n ? cum : undefined,
+      marker: { color: '#111827', size: 6 },
+      line: { color: '#111827' },
+      name: 'Cumulative',
+      hovertemplate: '≤ PC %{x}<br>%{y:.3f} cumulative<extra></extra>'
+    };
+
+    const width = container.clientWidth || 800;
+    const small = width < 560;
+    const height = small ? 280 : 360;
+    const layout = {
+      height,
+      margin: { l: 70, r: 20, t: 10, b: 60 },
+      xaxis: { title: 'Component', tickmode: 'array', tickvals: x, ticktext: xlabels, automargin: true, gridcolor: '#f3f4f6' },
+      yaxis: { title: 'Fraction of variance explained', rangemode: 'tozero', automargin: true, gridcolor: '#f3f4f6' },
+      plot_bgcolor: '#ffffff',
+      paper_bgcolor: '#ffffff',
+      showlegend: true,
+      legend: { orientation: 'h', y: -0.2 }
+    };
+    const config = { responsive: true, displayModeBar: false };
+    container.innerHTML = '';
+    const div = document.createElement('div');
+    container.appendChild(div);
+    const traces = [bar];
+    if (line.y) traces.push(line);
+    Plotly.newPlot(div, traces, layout, config);
+  }
+
+  function setupLoadingsControls(controls, pcSelect, data) {
+    if (!controls || !pcSelect) return;
+    const k = typeof data.components === 'number' ? data.components : (Array.isArray(data.explained_variance_ratio) ? data.explained_variance_ratio.length : 0);
+    pcSelect.innerHTML = '';
+    for (let i = 0; i < k; i++) {
+      const opt = document.createElement('option');
+      opt.value = String(i);
+      opt.textContent = `PC ${i + 1}`;
+      pcSelect.appendChild(opt);
+    }
+    controls.style.display = k > 0 ? '' : 'none';
+    pcSelect.value = '0';
+    pcSelect.onchange = () => {
+      renderPCALoadings(document.getElementById('pca-loadings'), data, parseInt(pcSelect.value, 10) || 0);
+    };
+  }
+
+  function renderPCALoadings(container, data, pcIndex = 0) {
+    if (!container) return;
+    const loadings = Array.isArray(data.loadings) ? data.loadings : [];
+    const cols = Array.isArray(data.columns) ? data.columns : [];
+    if (!loadings.length || !cols.length) {
+      container.innerHTML = '<div style="color: var(--muted);">No loadings to display.</div>';
+      return;
+    }
+    const k = loadings.length;
+    const p = cols.length;
+    const idx = Math.max(0, Math.min(pcIndex, k - 1));
+    const v = loadings[idx]; // array length p
+    // Keep variables in the same order for each PC (no sorting)
+    const y = cols.map(name => String(name));
+    const x = cols.map((_, i) => Number(v[i]));
+    const colors = x.map(val => (val >= 0 ? '#34d399' : '#ef4444'));
+
+    const bar = {
+      type: 'bar',
+      orientation: 'h',
+      x,
+      y,
+      marker: { color: colors },
+      hovertemplate: '%{y}: %{x:.4f}<extra></extra>'
+    };
+    const width = container.clientWidth || 800;
+    const small = width < 560;
+    const height = Math.max(220, Math.min(600, y.length * (small ? 18 : 22)));
+    const layout = {
+      height,
+      margin: { l: 160, r: 20, t: 10, b: 40 },
+      xaxis: { title: 'Loading coefficient', zeroline: true, zerolinecolor: '#9ca3af', gridcolor: '#f3f4f6' },
+      yaxis: { automargin: true },
+      plot_bgcolor: '#ffffff',
+      paper_bgcolor: '#ffffff',
+      showlegend: false,
+    };
+    const config = { responsive: true, displayModeBar: false };
+    container.innerHTML = '';
+    const div = document.createElement('div');
+    container.appendChild(div);
+    Plotly.newPlot(div, [bar], layout, config);
+  }
+
+  // -------- Dimensionality Reduction UI --------
+  async function setupDR() {
+    const btn = document.getElementById('run-dr-btn');
+    const preview = document.getElementById('dr-preview');
+    const info = document.getElementById('dr-info');
+    const methodSel = document.getElementById('dr-method');
+    const modeSel = document.getElementById('dr-mode');
+    const npcsInp = document.getElementById('dr-npcs');
+    const colorSel = document.getElementById('dr-color');
+    const clusterSel = document.getElementById('dr-cluster');
+    const kmeansParams = document.getElementById('dr-kmeans-params');
+    const kmeansK = document.getElementById('dr-kmeans-k');
+    const dbscanParams = document.getElementById('dr-dbscan-params');
+    const dbscanEps = document.getElementById('dr-dbscan-eps');
+    const dbscanMin = document.getElementById('dr-dbscan-min');
+    const agglomParams = document.getElementById('dr-agglom-params');
+    const agglomK = document.getElementById('dr-agglom-k');
+    const agglomLink = document.getElementById('dr-agglom-linkage');
+    const hdbscanParams = document.getElementById('dr-hdbscan-params');
+    const hdbscanMinSize = document.getElementById('dr-hdbscan-minsize');
+    const hdbscanMinSamples = document.getElementById('dr-hdbscan-minsamples');
+    if (!btn || !preview) return;
+
+    // Populate color-by options
+    try {
+      const meta = await fetchJSON('/api/columns');
+      const cols = meta.columns || [];
+      for (const c of cols) {
+        const opt = document.createElement('option');
+        opt.value = opt.textContent = c.name;
+        colorSel.appendChild(opt);
+      }
+    } catch (e) {
+      // ignore if no dataset
+    }
+
+    function syncNpcsVisibility() {
+      const show = modeSel.value === 'pcs';
+      npcsInp.style.display = show ? '' : 'none';
+      const label = document.querySelector('label[for="dr-npcs"]');
+      if (label) label.style.display = show ? '' : 'none';
+    }
+    modeSel.addEventListener('change', syncNpcsVisibility);
+    syncNpcsVisibility();
+
+    function syncClusterParams() {
+      const m = clusterSel.value;
+      kmeansParams.style.display = (m === 'kmeans') ? '' : 'none';
+      dbscanParams.style.display = (m === 'dbscan') ? '' : 'none';
+      agglomParams.style.display = (m === 'agglomerative') ? '' : 'none';
+      hdbscanParams.style.display = (m === 'hdbscan') ? '' : 'none';
+    }
+    clusterSel.addEventListener('change', syncClusterParams);
+    syncClusterParams();
+
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      const prev = btn.textContent;
+      btn.textContent = 'Running…';
+      info.textContent = '';
+      try {
+        const params = new URLSearchParams();
+        params.set('method', methodSel.value);
+        params.set('mode', modeSel.value);
+        if (modeSel.value === 'pcs') {
+          const k = parseInt(npcsInp.value, 10);
+          if (Number.isFinite(k) && k > 0) params.set('n_pcs', String(k));
+        }
+        const color = colorSel.value || '';
+        if (color) params.set('color', color);
+        // clustering
+        const cl = clusterSel.value;
+        params.set('cluster', cl);
+        if (cl === 'kmeans') {
+          const k = parseInt(kmeansK.value, 10);
+          if (Number.isFinite(k) && k >= 2) params.set('kmeans_k', String(k));
+        } else if (cl === 'dbscan') {
+          const eps = parseFloat(dbscanEps.value);
+          const minPts = parseInt(dbscanMin.value, 10);
+          if (Number.isFinite(eps) && eps > 0) params.set('dbscan_eps', String(eps));
+          if (Number.isFinite(minPts) && minPts >= 1) params.set('dbscan_min_samples', String(minPts));
+        } else if (cl === 'agglomerative') {
+          const k = parseInt(agglomK.value, 10);
+          if (Number.isFinite(k) && k >= 2) params.set('agglom_k', String(k));
+          params.set('agglom_linkage', agglomLink.value);
+        } else if (cl === 'hdbscan') {
+          const mcs = parseInt(hdbscanMinSize.value, 10);
+          const ms = parseInt(hdbscanMinSamples.value, 10);
+          if (Number.isFinite(mcs) && mcs >= 2) params.set('hdbscan_min_cluster_size', String(mcs));
+          if (Number.isFinite(ms) && ms >= 1) params.set('hdbscan_min_samples', String(ms));
+        }
+        const data = await fetchJSON(`/api/dr?${params.toString()}`);
+        // If clustering was run, append color option and render with clusters colored by default
+        let dataForRender = data;
+        if (Array.isArray(data.cluster_labels) && typeof data.cluster_algorithm === 'string') {
+          const optName = `cluster_ids_${data.cluster_algorithm}`;
+          // Append to dropdown if missing
+          let exists = false;
+          for (const opt of colorSel.options) { if (opt.value === optName) { exists = true; break; } }
+          if (!exists) {
+            const opt = document.createElement('option');
+            opt.value = opt.textContent = optName;
+            colorSel.appendChild(opt);
+          }
+          // Select the new option and color by clusters
+          colorSel.value = optName;
+          const clusterColors = data.cluster_labels.map(v => (v == null ? null : String(v)));
+          dataForRender = { ...data, color_values: clusterColors, color_column: optName };
+        }
+        renderDimred(preview, dataForRender);
+        const meth = data.method || methodSel.value;
+        const mode = data.preprocess && data.preprocess.mode ? data.preprocess.mode : modeSel.value;
+        const k = data.preprocess && data.preprocess.n_pcs ? data.preprocess.n_pcs : undefined;
+        const used = (mode === 'pcs' && k) ? `first ${k} PCs` : 'all numeric features';
+        const n = data.n_points ?? (data.x ? data.x.length : '?');
+        info.textContent = `Method: ${meth.toUpperCase()} · ${used} · Points: ${n}` + (data.color_column ? ` · Colored by: ${data.color_column}` : '');
+        const sil = (typeof data.silhouette === 'number' && isFinite(data.silhouette)) ? data.silhouette : null;
+        if (sil !== null) {
+          const excl = (typeof data.n_noise === 'number' && data.n_noise > 0) ? ' (excl. noise)' : '';
+          info.textContent += ` · Silhouette: ${sil.toFixed(3)}${excl}`;
+        }
+      } catch (e) {
+        let msg = String(e);
+        if (msg.includes('(missing_dep_sklearn)')) {
+          msg += `\nInstall scikit-learn to use t-SNE.`;
+        } else if (msg.includes('(missing_dep_umap)')) {
+          msg += `\nInstall umap-learn to use UMAP.`;
+        } else if (msg.includes('(missing_dep_hdbscan)')) {
+          msg += `\nInstall hdbscan to use HDBSCAN clustering.`;
+        }
+        preview.innerHTML = `<div style=\"color: var(--muted); white-space: pre-wrap;\">${msg}</div>`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = prev;
+      }
+    });
+  }
+
+  function renderDimred(container, data) {
+    const xs = Array.isArray(data.x) ? data.x : [];
+    const ys = Array.isArray(data.y) ? data.y : [];
+    const ids = Array.isArray(data.id) ? data.id : [];
+    const colors = Array.isArray(data.color_values) ? data.color_values : null;
+    const colorCol = data.color_column || '';
+    const points = [];
+
+    const width = container.clientWidth || 800;
+    const small = width < 560;
+    const height = small ? 320 : 400;
+
+    const palette = ['#60a5fa','#34d399','#f59e0b','#ef4444','#a78bfa','#10b981','#f472b6','#22d3ee','#fb7185','#93c5fd','#fbbf24','#d946ef','#14b8a6','#fca5a5','#4ade80'];
+
+    if (!colors) {
+      // No color — single trace
+      const text = ids.map((id, i) => `${id || ''}${id ? ', ' : ''}(${xs[i]}, ${ys[i]})`);
+      points.push({
+        type: 'scattergl', mode: 'markers', name: 'points', x: xs, y: ys,
+        marker: { color: '#111827', size: 5, opacity: 0.9 }, text,
+        hovertemplate: '%{text}<extra></extra>'
+      });
+    } else if (colors.every(v => typeof v === 'number')) {
+      // Numeric color scale
+      const text = ids.map((id, i) => `${id || ''}${id ? ', ' : ''}${colorCol}: ${colors[i]}\n(${xs[i]}, ${ys[i]})`);
+      points.push({
+        type: 'scattergl', mode: 'markers', name: 'points', x: xs, y: ys,
+        marker: { size: 6, opacity: 0.9, color: colors, colorscale: 'Viridis', colorbar: { title: colorCol } },
+        text, hovertemplate: '%{text}<extra></extra>'
+      });
+    } else {
+      // Categorical — bucket into groups
+      const groups = new Map();
+      for (let i = 0; i < xs.length; i++) {
+        const key = colors[i] == null ? 'NA' : String(colors[i]);
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(i);
+      }
+      Array.from(groups.entries()).forEach(([name, idxs], j) => {
+        const x = idxs.map(i => xs[i]);
+        const y = idxs.map(i => ys[i]);
+        const text = idxs.map(i => {
+          const id = ids[i] || '';
+          return `${id}${id ? ', ' : ''}${colorCol}: ${name}\n(${xs[i]}, ${ys[i]})`;
+        });
+        points.push({
+          type: 'scattergl', mode: 'markers', name: String(name), legendgroup: String(name),
+          x, y, text, marker: { color: palette[j % palette.length], size: 6, opacity: 0.9 },
+          hovertemplate: '%{text}<extra></extra>'
+        });
+      });
+    }
+
+    const layout = {
+      height,
+      margin: { l: 60, r: 20, t: 10, b: 50 },
+      xaxis: { title: 'Dim 1', automargin: true, zeroline: false, gridcolor: '#f3f4f6' },
+      yaxis: { title: 'Dim 2', automargin: true, zeroline: false, gridcolor: '#f3f4f6' },
+      plot_bgcolor: '#ffffff',
+      paper_bgcolor: '#ffffff',
+      showlegend: !!colors && !colors.every(v => typeof v === 'number'),
+    };
+    const config = { responsive: true, displayModeBar: false };
+    container.innerHTML = '';
+    const div = document.createElement('div');
+    container.appendChild(div);
+    Plotly.newPlot(div, points, layout, config);
   }
 
   async function buildScatterConfig(card, configEl, previewEl) {
