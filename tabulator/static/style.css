@@ -166,6 +166,21 @@ label.toggle input[type="checkbox"] { margin: 0; }
 /* Plot container: allow Plotly to size responsively without clipping */
 .plot-card .plot-preview { width: 100%; overflow-x: auto; }
 .plot-card .plot-preview > div { width: 100% !important; }
+.plot-preview { position: relative; padding-top: 28px; }
+.plot-toolbar {
+  position: absolute;
+  top: 2px;
+  right: 6px;
+  display: inline-flex;
+  gap: 6px;
+  z-index: 5;
+}
+.plot-toolbar button {
+  padding: 4px 8px;
+  font-size: 12px;
+  line-height: 1;
+  border-radius: 4px;
+}
 
 @media (max-width: 640px) {
   .card-body { padding: 12px; }

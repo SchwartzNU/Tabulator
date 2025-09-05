@@ -97,6 +97,45 @@
     return await res.json();
   }
 
+  // Generic Plotly rendering with a small export toolbar (PNG/JSON)
+  function renderPlot(container, traces, layout, config = {}, nameHint = 'plot') {
+    container.innerHTML = '';
+    const plotDiv = document.createElement('div');
+    container.appendChild(plotDiv);
+    const cfg = { responsive: true, displayModeBar: false, ...config };
+    Plotly.newPlot(plotDiv, traces, layout, cfg);
+    plotDiv.__plotlyCfg = cfg;
+
+    // Toolbar overlay
+    const bar = document.createElement('div');
+    bar.className = 'plot-toolbar';
+    const btnPng = document.createElement('button'); btnPng.className = 'secondary'; btnPng.textContent = 'PNG'; btnPng.title = 'Download PNG';
+    const btnJson = document.createElement('button'); btnJson.className = 'secondary'; btnJson.textContent = 'JSON'; btnJson.title = 'Download Plotly JSON';
+    bar.appendChild(btnPng); bar.appendChild(btnJson);
+    container.appendChild(bar);
+
+    function filename(ext) {
+      const ts = new Date().toISOString().replace(/[:T]/g, '-').split('.')[0];
+      return `${nameHint}-${ts}.${ext}`;
+    }
+    btnPng.addEventListener('click', async () => {
+      try {
+        const url = await Plotly.toImage(plotDiv, { format: 'png', width: plotDiv.clientWidth || 800, height: (layout && layout.height) || 360, scale: 2 });
+        const a = document.createElement('a'); a.href = url; a.download = filename('png'); a.click();
+      } catch (e) { console.error('PNG export failed', e); }
+    });
+    btnJson.addEventListener('click', () => {
+      try {
+        const fig = { data: plotDiv.data || [], layout: plotDiv.layout || {}, config: plotDiv.__plotlyCfg || {} };
+        const blob = new Blob([JSON.stringify(fig, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.href = url; a.download = filename('plotly.json'); a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 500);
+      } catch (e) { console.error('JSON export failed', e); }
+    });
+    // No WYSIWYG edit toggle — simplified toolbar
+  }
+
   async function initializePlotCard(card) {
     const typeSel = card.querySelector('.plot-type');
     const configEl = card.querySelector('.plot-config');
@@ -202,13 +241,9 @@
       showlegend: true,
       legend: { orientation: 'h', y: -0.2 }
     };
-    const config = { responsive: true, displayModeBar: false };
-    container.innerHTML = '';
-    const div = document.createElement('div');
-    container.appendChild(div);
     const traces = [bar];
     if (line.y) traces.push(line);
-    Plotly.newPlot(div, traces, layout, config);
+    renderPlot(container, traces, layout, { displayModeBar: false }, 'pca-elbow');
   }
 
   function setupLoadingsControls(controls, pcSelect, data) {
@@ -265,11 +300,7 @@
       paper_bgcolor: '#ffffff',
       showlegend: false,
     };
-    const config = { responsive: true, displayModeBar: false };
-    container.innerHTML = '';
-    const div = document.createElement('div');
-    container.appendChild(div);
-    Plotly.newPlot(div, [bar], layout, config);
+    renderPlot(container, [bar], layout, { displayModeBar: false }, 'pca-loadings');
   }
 
   async function setupPCAScatter(ctrlEl, pcaMeta, refs) {
@@ -440,11 +471,7 @@
       showlegend: !!colors && !colors.every(v => typeof v === 'number'),
     };
 
-    const config = { responsive: true, displayModeBar: false };
-    container.innerHTML = '';
-    const div = document.createElement('div');
-    container.appendChild(div);
-    Plotly.newPlot(div, traces, layout, config);
+    renderPlot(container, traces, layout, { displayModeBar: false }, 'pca-scores');
   }
 
   // -------- Dimensionality Reduction UI --------
@@ -647,11 +674,7 @@
       paper_bgcolor: '#ffffff',
       showlegend: !!colors && !colors.every(v => typeof v === 'number'),
     };
-    const config = { responsive: true, displayModeBar: false };
-    container.innerHTML = '';
-    const div = document.createElement('div');
-    container.appendChild(div);
-    Plotly.newPlot(div, points, layout, config);
+    renderPlot(container, points, layout, { displayModeBar: false }, 'dimred');
   }
 
   async function buildScatterConfig(card, configEl, previewEl) {
@@ -954,11 +977,7 @@
       showlegend: true,
     };
 
-    const config = { responsive: true, displayModeBar: false };
-    container.innerHTML = '';
-    const div = document.createElement('div');
-    container.appendChild(div);
-    Plotly.newPlot(div, traces, layout, config);
+    renderPlot(container, traces, layout, { displayModeBar: false }, 'scatter');
   }
 
   async function buildBarConfig(card, configEl, previewEl) {
@@ -1231,12 +1250,7 @@
       showlegend: false,
     };
 
-    const config = { responsive: true, displayModeBar: false };
-
-    container.innerHTML = '';
-    const div = document.createElement('div');
-    container.appendChild(div);
-    Plotly.newPlot(div, [barTrace, pointsTrace], layout, config);
+    renderPlot(container, [barTrace, pointsTrace], layout, { displayModeBar: false }, 'bar');
   }
 
   // Helpers: nice ticks for linear scale
