@@ -258,7 +258,7 @@ def api_classify_train():
 
     JSON body:
     - label: column name to use as labels
-    - clf: one of ['svm','logistic','decision_tree','random_forest','neural_net','cnn']
+    - clf: one of ['svm','logistic','decision_tree','random_forest','neural_net']
     - test_frac: float in (0,1)
     - max_iters: optional int (default 50)
     - patience: optional int (default 5)
@@ -280,7 +280,7 @@ def api_classify_train():
 
     if not label_col:
         return jsonify({"error": "missing_label"}), 400
-    if clf_name not in {"svm", "logistic", "decision_tree", "random_forest", "neural_net", "cnn"}:
+    if clf_name not in {"svm", "logistic", "decision_tree", "random_forest", "neural_net"}:
         return jsonify({"error": "bad_classifier"}), 400
     if not (0 < test_frac < 1):
         return jsonify({"error": "bad_test_frac"}), 400
@@ -485,49 +485,8 @@ def api_classify_train():
         record(1, clf)
         best_iter = 1
         final_model = clf
-    else:  # cnn
-        try:
-            import tensorflow as tf  # type: ignore
-        except Exception:
-            return jsonify({"error": "missing_dep_tensorflow"}), 501
-        # Minimal 1D CNN over features
-        n_feat = X_tr.shape[1]
-        model = tf.keras.Sequential([
-            tf.keras.layers.Input(shape=(n_feat, 1)),
-            tf.keras.layers.Conv1D(16, 3, padding='same', activation='relu'),
-            tf.keras.layers.Conv1D(16, 3, padding='same', activation='relu'),
-            tf.keras.layers.GlobalAveragePooling1D(),
-            tf.keras.layers.Dense(max(32, n_classes * 2), activation='relu'),
-            tf.keras.layers.Dense(n_classes, activation='softmax'),
-        ])
-        model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
-        Xtr_c = X_tr.reshape((-1, n_feat, 1))
-        Xval_c = X_val.reshape((-1, n_feat, 1))
-        best_val = float('inf'); best_iter = 0; no_improve = 0
-        for i in range(1, max_iters + 1):
-            model.fit(Xtr_c, y_tr, epochs=1, verbose=0)
-            # Evaluate
-            tr_acc = float(model.evaluate(Xtr_c, y_tr, verbose=0)[1])
-            val_acc = float(model.evaluate(Xval_c, y_val, verbose=0)[1])
-            iters.append(i)
-            train_err.append(1.0 - tr_acc)
-            val_err.append(1.0 - val_acc)
-            vl = 1.0 - val_acc
-            if vl + 1e-9 < best_val:
-                best_val = vl; best_iter = i; no_improve = 0
-            else:
-                no_improve += 1
-                if early_stop and no_improve >= patience:
-                    stopped_early = True
-                    break
-        final_model = model
-
     # Evaluate on test with the final_model
-    if clf_name == "cnn":
-        Xts = X_test.reshape((-1, X_test.shape[1], 1))
-        test_pred = final_model.predict(Xts, verbose=0).argmax(axis=1)
-    else:
-        test_pred = final_model.predict(X_test)
+    test_pred = final_model.predict(X_test)
     test_acc = float(accuracy_score(y_test, test_pred))
     cm = confusion_matrix(y_test, test_pred, labels=np.arange(n_classes)).tolist()
 

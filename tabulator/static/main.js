@@ -743,7 +743,6 @@
         }
       } catch (e) {
         let msg = String(e);
-        if (msg.includes('(missing_dep_tensorflow)')) msg += `\nInstall tensorflow to use CNNs.`;
         learnDiv.innerHTML = `<div style=\"color: var(--muted); white-space: pre-wrap;\">${msg}</div>`;
       } finally {
         btn.disabled = false;
