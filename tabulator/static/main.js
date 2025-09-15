@@ -907,6 +907,11 @@
 
     if (numeric.length) xSel.value = numeric[0].name;
     if (numeric.length > 1) ySel.value = numeric[1].name;
+    // Prefer 'cell_type' as default group if available
+    const hasCellType = allCols.some(c => c.name === 'cell_type');
+    if (hasCellType) {
+      groupSel.value = 'cell_type';
+    }
 
     async function refreshPlot() {
       const x = xSel.value;
@@ -1179,10 +1184,15 @@
       groupSel.appendChild(opt);
     }
 
-    // Choose defaults: first numeric for value, first non-value for group if possible
+    // Choose defaults: first numeric for value, prefer 'cell_type' for group if present, else first non-value column
     if (numeric.length) valueSel.value = numeric[0].name;
     if (allCols.length) {
-      groupSel.value = allCols.find(c => c.name !== valueSel.value)?.name || allCols[0].name;
+      const hasCellType = allCols.some(c => c.name === 'cell_type');
+      if (hasCellType) {
+        groupSel.value = 'cell_type';
+      } else {
+        groupSel.value = allCols.find(c => c.name !== valueSel.value)?.name || allCols[0].name;
+      }
     }
 
     async function refreshPlot() {
