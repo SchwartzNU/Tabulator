@@ -1113,6 +1113,7 @@
     const valueId = `plot-${id}-value`;
     const groupId = `plot-${id}-group`;
     const errId = `plot-${id}-err`;
+    const orderId = `plot-${id}-order`;
     const logId = `plot-${id}-log`;
     const yminId = `plot-${id}-ymin`;
     const ymaxId = `plot-${id}-ymax`;
@@ -1134,6 +1135,15 @@
             <option value="sem">SEM</option>
           </select>
         </span>
+        <span class="field">
+          <label for="${orderId}">Order by</label>
+          <select id="${orderId}">
+            <option value="label_asc">Label (A→Z)</option>
+            <option value="label_desc">Label (Z→A)</option>
+            <option value="value_asc">Value/mean (low→high)</option>
+            <option value="value_desc">Value/mean (high→low)</option>
+          </select>
+        </span>
         <label class="toggle"><input id="${logId}" type="checkbox" /> Log scale</label>
       </div>
       <div class="form-row" style="margin-top:8px;">
@@ -1151,6 +1161,7 @@
     const valueSel = document.getElementById(valueId);
     const groupSel = document.getElementById(groupId);
     const errSel = document.getElementById(errId);
+    const orderSel = document.getElementById(orderId);
     const logChk = document.getElementById(logId);
     const yminInp = document.getElementById(yminId);
     const ymaxInp = document.getElementById(ymaxId);
@@ -1178,12 +1189,13 @@
       const value = valueSel.value;
       const group = groupSel.value;
       const err = errSel.value; // none|sd|sem
+      const order = orderSel.value; // label_asc|label_desc|value_asc|value_desc
       const log = !!logChk.checked;
       const yMin = parseFloat(yminInp.value);
       const yMax = parseFloat(ymaxInp.value);
       try {
         const data = await fetchJSON(`/api/plot/bar?value=${encodeURIComponent(value)}&group=${encodeURIComponent(group)}`);
-        const opts = { err, log };
+        const opts = { err, log, order };
         if (!Number.isNaN(yMin)) opts.yMin = yMin;
         if (!Number.isNaN(yMax)) opts.yMax = yMax;
         renderBarPlot(previewEl, data, opts);
@@ -1195,6 +1207,7 @@
     valueSel.addEventListener('change', refreshPlot);
     groupSel.addEventListener('change', refreshPlot);
     errSel.addEventListener('change', refreshPlot);
+    orderSel.addEventListener('change', refreshPlot);
     logChk.addEventListener('change', refreshPlot);
     yminInp.addEventListener('change', refreshPlot);
     ymaxInp.addEventListener('change', refreshPlot);
@@ -1202,21 +1215,47 @@
     await refreshPlot();
   }
 
-  function renderBarPlot(container, data, opts = { err: 'none', log: false }) {
+  function renderBarPlot(container, data, opts = { err: 'none', log: false, order: 'label_asc' }) {
     const groups = Array.isArray(data.groups) ? data.groups : [];
     const unit = data.unit || '';
     const label = data.value || '';
     const groupName = data.group || '';
     const groupUnit = data.group_unit || '';
 
-    const xlabels = groups.map(g => String(g.name));
-    const xpos = groups.map((_, i) => i);
-
+    // Determine ordering of groups for plotting
+    const n = groups.length;
+    const indices = Array.from({ length: n }, (_, i) => i);
     const rawMeans = groups.map(g => (typeof g.mean === 'number' && isFinite(g.mean)) ? g.mean : null);
-    const means = rawMeans.map(m => (opts.log && !(m > 0) ? null : m));
-    const errArray = groups.map((g, i) => {
-      let eb = computeError(g.values || [], opts.err);
-      const m = rawMeans[i];
+    const names = groups.map(g => String(g.name));
+    const orderMode = opts.order || 'label_asc';
+    const cmp = (a, b) => {
+      if (orderMode === 'value_asc' || orderMode === 'value_desc') {
+        const va = rawMeans[a];
+        const vb = rawMeans[b];
+        const na = !(typeof va === 'number' && isFinite(va));
+        const nb = !(typeof vb === 'number' && isFinite(vb));
+        if (na && nb) return 0;
+        if (na) return 1; // push NaNs/nulls to end
+        if (nb) return -1;
+        return orderMode === 'value_asc' ? (va - vb) : (vb - va);
+      } else {
+        // label_asc / label_desc; treat missing as empty string
+        const sa = names[a] ?? '';
+        const sb = names[b] ?? '';
+        return orderMode === 'label_desc' ? String(sb).localeCompare(String(sa)) : String(sa).localeCompare(String(sb));
+      }
+    };
+    indices.sort(cmp);
+    const posByOrig = new Map(indices.map((origIdx, pos) => [origIdx, pos]));
+    const xlabels = indices.map(i => names[i]);
+    const xpos = indices.map((_, i) => i);
+
+    const meansOrderedRaw = indices.map(i => rawMeans[i]);
+    const means = meansOrderedRaw.map(m => (opts.log && !(m > 0) ? null : m));
+    const errArray = indices.map((i) => {
+      const g = groups[i];
+      let eb = computeError((g && g.values) || [], opts.err);
+      const m = groups[i] && (typeof groups[i].mean === 'number' && isFinite(groups[i].mean)) ? groups[i].mean : null;
       if (opts.log) {
         if (!(m > 0) || !(typeof eb === 'number' && isFinite(eb))) return 0;
         // Clamp so that mean - error stays positive for log display
@@ -1254,7 +1293,8 @@
         const v = p.value;
         if (!(typeof v === 'number' && isFinite(v))) return;
         if (opts.log && !(v > 0)) return;
-        pointX.push(i + (Math.random() - 0.5) * 2 * jitter);
+        const newPos = posByOrig.get(i) ?? i;
+        pointX.push(newPos + (Math.random() - 0.5) * 2 * jitter);
         pointY.push(v);
         const id = (p.id ?? '').toString();
         pointText.push(id ? `${id}, ${v}` : `${v}`);

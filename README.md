@@ -79,6 +79,7 @@ Expected behavior
 - Columns are considered numeric only if all non-empty values are numeric-like. Mixed columns (numbers plus words) remain text.
 - Grouping works with text columns (e.g., `group`).
 - Plotting requires a numeric `value` column; mixed or text-only value columns will be ignored during aggregation (non-numeric entries are dropped).
+- Bar plots support ordering bars by label or by value/mean (ascending/descending) via the UI.
 
 Troubleshooting
 ---------------
