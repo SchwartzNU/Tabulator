@@ -22,7 +22,7 @@ def create_app() -> Flask:
     # Register blueprints
     from .routes import bp as main_bp
 
-    app.register_blueprint(main_bp)
+    app.register_blueprint(main_bp, url_prefix="/tabulator")
 
     return app
 
