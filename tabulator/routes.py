@@ -1,4 +1,5 @@
 import os
+import dotenv
 from flask import (
     Blueprint,
     current_app,
@@ -25,6 +26,7 @@ from sklearn.tree import DecisionTreeClassifier
 import datajoint as dj
 
 bp = Blueprint("main", __name__)
+dotenv.load_dotenv()
 
 
 def _allowed_file(filename: str) -> bool:
@@ -1112,8 +1114,8 @@ def upload():
 @bp.get("/dj_test")
 def connect_to_dj():
     dj.config["database.host"] = "vfsmdatajoint01.fsm.northwestern.edu"
-    dj.config["database.user"] = "Trung"
-    dj.config["database.password"] = "Trung_temppwd"
+    dj.config["database.user"] = os.environ.get("DJ_USERNAME")
+    dj.config["database.password"] = os.environ.get("DJ_PASSWORD")
 
     c = dj.conn()
     return str(c.is_connected)
