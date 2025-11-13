@@ -1,7 +1,7 @@
 import os
 from flask import Flask
-
-from .config import BaseConfig, LocalDevConfig
+from asgiref.wsgi import WsgiToAsgi
+from .config import BaseConfig, LocalDevConfig, ProductionConfig
 
 
 def create_app() -> Flask:
@@ -22,7 +22,6 @@ def create_app() -> Flask:
     # Register blueprints
     from .routes import bp as main_bp
 
-    app.register_blueprint(main_bp, url_prefix="/tabulator")
-
+    app.register_blueprint(main_bp)
+    app = WsgiToAsgi(app)
     return app
-

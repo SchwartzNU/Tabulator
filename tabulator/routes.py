@@ -1,9 +1,28 @@
 import os
-from flask import Blueprint, current_app, flash, redirect, render_template, request, url_for, session, jsonify
+from flask import (
+    Blueprint,
+    current_app,
+    flash,
+    redirect,
+    render_template,
+    request,
+    url_for,
+    session,
+    jsonify,
+)
 from werkzeug.utils import secure_filename
-
 from .loader import load_dataset, LoadError, DataSet
 from .data_store import store
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import StratifiedShuffleSplit
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import accuracy_score, confusion_matrix
+from sklearn.linear_model import SGDClassifier
+from sklearn.neural_network import MLPClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.tree import DecisionTreeClassifier
+import datajoint as dj
 
 bp = Blueprint("main", __name__)
 
@@ -44,7 +63,7 @@ def index():
     )
 
 
-@bp.get("/api/columns")
+@bp.route("/api/columns")
 def api_columns():
     dataset_id = session.get("dataset_id")
     ds = store.get(dataset_id) if dataset_id else None
@@ -56,13 +75,12 @@ def api_columns():
         import pandas as pd
         from pandas.api.types import is_numeric_dtype
     except Exception:
+
         def is_numeric_dtype(x):
             return False
+
     for c in df.columns:
-        cols.append({
-            "name": str(c),
-            "is_numeric": bool(is_numeric_dtype(df[c]))
-        })
+        cols.append({"name": str(c), "is_numeric": bool(is_numeric_dtype(df[c]))})
     return jsonify({"columns": cols})
 
 
@@ -123,7 +141,7 @@ def api_pca():
         # SVD on standardized data
         U, S, Vt = np.linalg.svd(Xz, full_matrices=False)
         # Explained variance per component
-        explained_variance = (S ** 2) / (n_samples - 1)
+        explained_variance = (S**2) / (n_samples - 1)
         total_var = explained_variance.sum()
         if not np.isfinite(total_var) or total_var <= 0:
             return jsonify({"error": "degenerate_variance"}), 400
@@ -133,17 +151,19 @@ def api_pca():
     except Exception as e:
         return jsonify({"error": "pca_failed", "detail": str(e)}), 500
 
-    return jsonify({
-        "n_samples": n_samples,
-        "n_features": n_features,
-        "columns": cols_kept,
-        "explained_variance_ratio": evr,
-        "cumulative_ratio": cum,
-        "components": int(Vt.shape[0]),
-        "loadings": Vt.tolist(),  # shape: [components][n_features]
-        "standardized": True,
-        "dropped_constant_columns": dropped,
-    })
+    return jsonify(
+        {
+            "n_samples": n_samples,
+            "n_features": n_features,
+            "columns": cols_kept,
+            "explained_variance_ratio": evr,
+            "cumulative_ratio": cum,
+            "components": int(Vt.shape[0]),
+            "loadings": Vt.tolist(),  # shape: [components][n_features]
+            "standardized": True,
+            "dropped_constant_columns": dropped,
+        }
+    )
 
 
 @bp.get("/api/pca/scores")
@@ -169,7 +189,7 @@ def api_pca_scores():
     # Parse PCs
     if pcs_param:
         try:
-            pcs_list = [int(x) for x in pcs_param.split(',') if x.strip()]
+            pcs_list = [int(x) for x in pcs_param.split(",") if x.strip()]
         except Exception:
             return jsonify({"error": "bad_pcs"}), 400
     else:
@@ -215,11 +235,11 @@ def api_pca_scores():
     try:
         U, S, Vt = np.linalg.svd(Xz, full_matrices=False)
         n = Xz.shape[0]
-        explained_variance = (S ** 2) / (n - 1)
+        explained_variance = (S**2) / (n - 1)
         total_var = explained_variance.sum()
         evr = (explained_variance / total_var).tolist() if total_var > 0 else []
         # Scores: U * S
-        scores = (U * S)  # shape (n, k)
+        scores = U * S  # shape (n, k)
     except Exception as e:
         return jsonify({"error": "pca_failed", "detail": str(e)}), 500
 
@@ -236,20 +256,29 @@ def api_pca_scores():
     ids = [str(v) for v in id_series.tolist()]
     if color_series is not None:
         colors = color_series.tolist()
-        colors = [None if pd.isna(v) else (float(v) if isinstance(v, (int, float)) else str(v)) for v in colors]
+        colors = [
+            (
+                None
+                if pd.isna(v)
+                else (float(v) if isinstance(v, (int, float)) else str(v))
+            )
+            for v in colors
+        ]
     else:
         colors = None
 
-    return jsonify({
-        "pcs": pcs_list,
-        "explained_variance_ratio": evr,
-        "x": xs,
-        "y": ys,
-        "z": zs,
-        "id": ids,
-        "color_values": colors,
-        "color_column": str(color_col) if color_series is not None else None,
-    })
+    return jsonify(
+        {
+            "pcs": pcs_list,
+            "explained_variance_ratio": evr,
+            "x": xs,
+            "y": ys,
+            "z": zs,
+            "id": ids,
+            "color_values": colors,
+            "color_column": str(color_col) if color_series is not None else None,
+        }
+    )
 
 
 @bp.post("/api/classify/train")
@@ -280,7 +309,13 @@ def api_classify_train():
 
     if not label_col:
         return jsonify({"error": "missing_label"}), 400
-    if clf_name not in {"svm", "logistic", "decision_tree", "random_forest", "neural_net"}:
+    if clf_name not in {
+        "svm",
+        "logistic",
+        "decision_tree",
+        "random_forest",
+        "neural_net",
+    }:
         return jsonify({"error": "bad_classifier"}), 400
     if not (0 < test_frac < 1):
         return jsonify({"error": "bad_test_frac"}), 400
@@ -289,16 +324,6 @@ def api_classify_train():
     ds = store.get(dataset_id) if dataset_id else None
     if ds is None:
         return jsonify({"error": "no_dataset"}), 404
-
-    import numpy as np
-    import pandas as pd
-    from sklearn.model_selection import StratifiedShuffleSplit
-    from sklearn.preprocessing import StandardScaler
-    from sklearn.metrics import accuracy_score, confusion_matrix
-    from sklearn.linear_model import SGDClassifier
-    from sklearn.neural_network import MLPClassifier
-    from sklearn.ensemble import RandomForestClassifier
-    from sklearn.tree import DecisionTreeClassifier
 
     df = ds.df
     if label_col not in df.columns:
@@ -331,12 +356,17 @@ def api_classify_train():
     # Subset to kept labels only
     work = work[y_raw.isin(keep_labels)]
     if work.shape[0] < 2 or len(keep_labels) < 2:
-        return jsonify({
-            "error": "not_enough_classes",
-            "detail": "Too few samples per class after filtering",
-            "min_required_per_class": int(min_required),
-            "excluded_labels": excluded_labels,
-        }), 400
+        return (
+            jsonify(
+                {
+                    "error": "not_enough_classes",
+                    "detail": "Too few samples per class after filtering",
+                    "min_required_per_class": int(min_required),
+                    "excluded_labels": excluded_labels,
+                }
+            ),
+            400,
+        )
 
     # Encode labels as integers with mapping
     y_raw = work["__y"].astype(str)
@@ -346,13 +376,19 @@ def api_classify_train():
 
     # Stratified split
     n_splits = 1
-    sss = StratifiedShuffleSplit(n_splits=n_splits, test_size=test_frac, random_state=random_state)
+    sss = StratifiedShuffleSplit(
+        n_splits=n_splits, test_size=test_frac, random_state=random_state
+    )
     try:
         train_idx, test_idx = next(sss.split(X, y))
     except ValueError as e:
         # Edge case: still too few per class; relax by requiring min 3 and refilter
         min_required = max(min_required, 3)
-        keep_labels = set(pd.Series(y_raw).value_counts()[lambda s: s >= min_required].index.astype(str))
+        keep_labels = set(
+            pd.Series(y_raw)
+            .value_counts()[lambda s: s >= min_required]
+            .index.astype(str)
+        )
         work2 = work[y_raw.isin(keep_labels)]
         if work2.shape[0] < 2 or len(keep_labels) < 2:
             return jsonify({"error": "stratify_failed", "detail": str(e)}), 400
@@ -374,11 +410,14 @@ def api_classify_train():
     val_frac = min(0.2, max(0.1, 0.2))
     # Validation split (stratified if feasible)
     try:
-        sss2 = StratifiedShuffleSplit(n_splits=1, test_size=val_frac, random_state=random_state)
+        sss2 = StratifiedShuffleSplit(
+            n_splits=1, test_size=val_frac, random_state=random_state
+        )
         tr_idx, val_idx = next(sss2.split(X_train, y_train))
     except ValueError:
         # Fallback: simple shuffle split without stratification
         from sklearn.model_selection import ShuffleSplit
+
         ss = ShuffleSplit(n_splits=1, test_size=val_frac, random_state=random_state)
         tr_idx, val_idx = next(ss.split(X_train, y_train))
     X_tr, X_val = X_train[tr_idx], X_train[val_idx]
@@ -412,7 +451,9 @@ def api_classify_train():
             clf.partial_fit(X_tr, y_tr)
             _, vl = record(i, clf)
             if vl + 1e-9 < best_val:
-                best_val = vl; best_iter = i; no_improve = 0
+                best_val = vl
+                best_iter = i
+                no_improve = 0
             else:
                 no_improve += 1
                 if early_stop and no_improve >= patience:
@@ -431,7 +472,9 @@ def api_classify_train():
             clf.partial_fit(X_tr, y_tr)
             _, vl = record(i, clf)
             if vl + 1e-9 < best_val:
-                best_val = vl; best_iter = i; no_improve = 0
+                best_val = vl
+                best_iter = i
+                no_improve = 0
             else:
                 no_improve += 1
                 if early_stop and no_improve >= patience:
@@ -443,41 +486,63 @@ def api_classify_train():
             clf_best.partial_fit(X_tr, y_tr)
         final_model = clf_best
     elif clf_name == "neural_net":
-        clf = MLPClassifier(hidden_layer_sizes=(64, 64), activation="relu", solver="adam", learning_rate_init=0.001,
-                            random_state=random_state, max_iter=1, warm_start=True)
+        clf = MLPClassifier(
+            hidden_layer_sizes=(64, 64),
+            activation="relu",
+            solver="adam",
+            learning_rate_init=0.001,
+            random_state=random_state,
+            max_iter=1,
+            warm_start=True,
+        )
         for i in range(1, max_iters + 1):
             clf.fit(X_tr, y_tr)
             _, vl = record(i, clf)
             if vl + 1e-9 < best_val:
-                best_val = vl; best_iter = i; no_improve = 0
+                best_val = vl
+                best_iter = i
+                no_improve = 0
             else:
                 no_improve += 1
                 if early_stop and no_improve >= patience:
                     stopped_early = True
                     break
         # Retrain with best_iter epochs
-        final_model = MLPClassifier(hidden_layer_sizes=(64, 64), activation="relu", solver="adam", learning_rate_init=0.001,
-                                   random_state=random_state, max_iter=1, warm_start=True)
+        final_model = MLPClassifier(
+            hidden_layer_sizes=(64, 64),
+            activation="relu",
+            solver="adam",
+            learning_rate_init=0.001,
+            random_state=random_state,
+            max_iter=1,
+            warm_start=True,
+        )
         for _ in range(best_iter):
             final_model.fit(X_tr, y_tr)
     elif clf_name == "random_forest":
         step = max(5, int(max_iters // 5) * 2)  # add trees in chunks
         n_estimators = 0
-        clf = RandomForestClassifier(n_estimators=0, warm_start=True, random_state=random_state)
+        clf = RandomForestClassifier(
+            n_estimators=0, warm_start=True, random_state=random_state
+        )
         for i in range(1, max_iters + 1):
             n_estimators += step
             clf.set_params(n_estimators=n_estimators)
             clf.fit(X_tr, y_tr)
             _, vl = record(i, clf)
             if vl + 1e-9 < best_val:
-                best_val = vl; best_iter = i; no_improve = 0
+                best_val = vl
+                best_iter = i
+                no_improve = 0
             else:
                 no_improve += 1
                 if early_stop and no_improve >= patience:
                     stopped_early = True
                     break
         # Retrain to best_iter
-        final_model = RandomForestClassifier(n_estimators=best_iter * step, random_state=random_state)
+        final_model = RandomForestClassifier(
+            n_estimators=best_iter * step, random_state=random_state
+        )
         final_model.fit(X_tr, y_tr)
     elif clf_name == "decision_tree":
         clf = DecisionTreeClassifier(random_state=random_state)
@@ -490,23 +555,25 @@ def api_classify_train():
     test_acc = float(accuracy_score(y_test, test_pred))
     cm = confusion_matrix(y_test, test_pred, labels=np.arange(n_classes)).tolist()
 
-    return jsonify({
-        "classes": [str(c) for c in classes_],
-        "label": str(label_col),
-        "features": [str(c) for c in feat_cols],
-        "min_required_per_class": int(min_required),
-        "excluded_labels": excluded_labels,
-        "history": {
-            "iter": iters,
-            "train_error": train_err,
-            "val_error": val_err,
-        },
-        "best_iteration": int(best_iter),
-        "test_accuracy": test_acc,
-        "confusion_matrix": cm,
-        "classifier": clf_name,
-        "stopped_early": stopped_early,
-    })
+    return jsonify(
+        {
+            "classes": [str(c) for c in classes_],
+            "label": str(label_col),
+            "features": [str(c) for c in feat_cols],
+            "min_required_per_class": int(min_required),
+            "excluded_labels": excluded_labels,
+            "history": {
+                "iter": iters,
+                "train_error": train_err,
+                "val_error": val_err,
+            },
+            "best_iteration": int(best_iter),
+            "test_accuracy": test_acc,
+            "confusion_matrix": cm,
+            "classifier": clf_name,
+            "stopped_early": stopped_early,
+        }
+    )
 
 
 @bp.get("/api/dr")
@@ -546,7 +613,9 @@ def api_dimred():
         agglom_k = 5
     agglom_linkage = (request.args.get("agglom_linkage") or "ward").lower()
     try:
-        hdbscan_min_cluster_size = int(request.args.get("hdbscan_min_cluster_size", "10"))
+        hdbscan_min_cluster_size = int(
+            request.args.get("hdbscan_min_cluster_size", "10")
+        )
     except Exception:
         hdbscan_min_cluster_size = 10
     try:
@@ -643,7 +712,13 @@ def api_dimred():
             perplexity = min(perplexity, max(1.0, n - 1.0 - 1e-6))
         except Exception:
             perplexity = max(5.0, min(30.0, (n - 1) / 3.0))
-        tsne = TSNE(n_components=2, perplexity=perplexity, learning_rate="auto", init="pca", random_state=42)
+        tsne = TSNE(
+            n_components=2,
+            perplexity=perplexity,
+            learning_rate="auto",
+            init="pca",
+            random_state=42,
+        )
         Y = tsne.fit_transform(Xdr)
         method_meta = {"method": "tsne", "perplexity": float(perplexity)}
     else:  # umap
@@ -653,9 +728,15 @@ def api_dimred():
             return jsonify({"error": "missing_dep_umap"}), 501
         n_neighbors = int(request.args.get("n_neighbors", 15))
         min_dist = float(request.args.get("min_dist", 0.1))
-        reducer = umap.UMAP(n_components=2, n_neighbors=n_neighbors, min_dist=min_dist, random_state=42)
+        reducer = umap.UMAP(
+            n_components=2, n_neighbors=n_neighbors, min_dist=min_dist, random_state=42
+        )
         Y = reducer.fit_transform(Xdr)
-        method_meta = {"method": "umap", "n_neighbors": int(n_neighbors), "min_dist": float(min_dist)}
+        method_meta = {
+            "method": "umap",
+            "n_neighbors": int(n_neighbors),
+            "min_dist": float(min_dist),
+        }
 
     xs = Y[:, 0].astype(float).tolist()
     ys = Y[:, 1].astype(float).tolist()
@@ -664,7 +745,14 @@ def api_dimred():
         # Preserve raw values; frontend decides how to map
         colors = color_series.tolist()
         # Ensure JSON-serializable
-        colors = [None if pd.isna(v) else (float(v) if isinstance(v, (int, float)) else str(v)) for v in colors]
+        colors = [
+            (
+                None
+                if pd.isna(v)
+                else (float(v) if isinstance(v, (int, float)) else str(v))
+            )
+            for v in colors
+        ]
     else:
         colors = None
 
@@ -678,19 +766,28 @@ def api_dimred():
         try:
             if cluster == "kmeans":
                 from sklearn.cluster import KMeans  # type: ignore
+
                 k = int(max(2, kmeans_k))
                 model = KMeans(n_clusters=k, n_init=10, random_state=42)
                 labels = model.fit_predict(Y)
                 cluster_algo = f"kmeans{k}"
             elif cluster == "dbscan":
                 from sklearn.cluster import DBSCAN  # type: ignore
-                model = DBSCAN(eps=float(dbscan_eps), min_samples=int(dbscan_min_samples))
+
+                model = DBSCAN(
+                    eps=float(dbscan_eps), min_samples=int(dbscan_min_samples)
+                )
                 labels = model.fit_predict(Y)
                 cluster_algo = f"dbscan"
             elif cluster == "agglomerative":
                 from sklearn.cluster import AgglomerativeClustering  # type: ignore
+
                 k = int(max(2, agglom_k))
-                link = agglom_linkage if agglom_linkage in {"ward", "average", "complete"} else "ward"
+                link = (
+                    agglom_linkage
+                    if agglom_linkage in {"ward", "average", "complete"}
+                    else "ward"
+                )
                 # Ward requires euclidean and more than 1 cluster
                 if link == "ward" and k < 2:
                     k = 2
@@ -711,17 +808,29 @@ def api_dimred():
             # Cluster stats
             try:
                 import numpy as np
+
                 labels_arr = np.asarray(cluster_labels)
                 noise_mask = labels_arr == -1
                 n_noise = int(noise_mask.sum()) if noise_mask.any() else 0
                 # Exclude noise for silhouette and cluster counting
-                valid_mask = ~noise_mask if noise_mask.any() else np.ones_like(labels_arr, dtype=bool)
+                valid_mask = (
+                    ~noise_mask
+                    if noise_mask.any()
+                    else np.ones_like(labels_arr, dtype=bool)
+                )
                 unique = np.unique(labels_arr[valid_mask])
                 n_clusters = int(len(unique))
                 if n_clusters >= 2 and int(valid_mask.sum()) >= 2:
                     try:
                         from sklearn.metrics import silhouette_score  # type: ignore
-                        silhouette = float(silhouette_score(Y[valid_mask], labels_arr[valid_mask], metric="euclidean"))
+
+                        silhouette = float(
+                            silhouette_score(
+                                Y[valid_mask],
+                                labels_arr[valid_mask],
+                                metric="euclidean",
+                            )
+                        )
                     except Exception:
                         silhouette = None
             except Exception:
@@ -735,22 +844,24 @@ def api_dimred():
             n_noise = None
             silhouette = None
 
-    return jsonify({
-        "n_points": int(len(xs)),
-        "x": xs,
-        "y": ys,
-        "id": ids,
-        "color_values": colors,
-        "color_column": str(color_col) if color_series is not None else None,
-        "features_used": cols_kept,
-        "preprocess": preproc,
-        **method_meta,
-        "cluster_labels": cluster_labels,
-        "cluster_algorithm": cluster_algo,
-        "n_clusters": n_clusters,
-        "n_noise": n_noise,
-        "silhouette": silhouette,
-    })
+    return jsonify(
+        {
+            "n_points": int(len(xs)),
+            "x": xs,
+            "y": ys,
+            "id": ids,
+            "color_values": colors,
+            "color_column": str(color_col) if color_series is not None else None,
+            "features_used": cols_kept,
+            "preprocess": preproc,
+            **method_meta,
+            "cluster_labels": cluster_labels,
+            "cluster_algorithm": cluster_algo,
+            "n_clusters": n_clusters,
+            "n_noise": n_noise,
+            "silhouette": silhouette,
+        }
+    )
 
 
 @bp.get("/api/plot/bar")
@@ -770,6 +881,7 @@ def api_plot_bar():
 
     # Select columns as 1-D Series even if duplicate names exist
     import pandas as pd
+
     gcol = df[group]
     if isinstance(gcol, pd.DataFrame):
         gcol = gcol.iloc[:, 0]
@@ -815,23 +927,27 @@ def api_plot_bar():
             mean_val = float(gdf["_value"].mean())
         except Exception:
             mean_val = None
-        groups_out.append({
-            "name": str(gval),
-            "count": len(vals),
-            "mean": mean_val,
-            "values": vals,
-            "points": points,
-        })
+        groups_out.append(
+            {
+                "name": str(gval),
+                "count": len(vals),
+                "mean": mean_val,
+                "values": vals,
+                "points": points,
+            }
+        )
 
     unit = ds.units.get(value, "") if isinstance(ds.units, dict) else ""
     group_unit = ds.units.get(group, "") if isinstance(ds.units, dict) else ""
-    return jsonify({
-        "value": value,
-        "group": group,
-        "unit": unit,
-        "group_unit": group_unit,
-        "groups": groups_out,
-    })
+    return jsonify(
+        {
+            "value": value,
+            "group": group,
+            "unit": unit,
+            "group_unit": group_unit,
+            "groups": groups_out,
+        }
+    )
 
 
 @bp.get("/api/plot/scatter")
@@ -888,6 +1004,7 @@ def api_plot_scatter():
     # Build groups
     def compute_group_stats(gdf):
         import math
+
         xs = gdf["_x"].astype(float)
         ys = gdf["_y"].astype(float)
         n = int(len(xs))
@@ -913,40 +1030,50 @@ def api_plot_scatter():
             pts = []
             has_id = "_id" in gdf.columns
             if has_id:
-                for xi, yi, pid in zip(gdf["_x"].tolist(), gdf["_y"].tolist(), gdf["_id"].tolist()):
+                for xi, yi, pid in zip(
+                    gdf["_x"].tolist(), gdf["_y"].tolist(), gdf["_id"].tolist()
+                ):
                     pts.append({"x": float(xi), "y": float(yi), "id": str(pid)})
             else:
                 for xi, yi in zip(gdf["_x"].tolist(), gdf["_y"].tolist()):
                     pts.append({"x": float(xi), "y": float(yi), "id": ""})
-            groups_out.append({
-                "name": str(gval),
-                "points": pts,
-                "mean": compute_group_stats(gdf),
-            })
+            groups_out.append(
+                {
+                    "name": str(gval),
+                    "points": pts,
+                    "mean": compute_group_stats(gdf),
+                }
+            )
     else:
         pts = []
         if "_id" in tmp.columns:
-            for xi, yi, pid in zip(tmp["_x"].tolist(), tmp["_y"].tolist(), tmp["_id"].tolist()):
+            for xi, yi, pid in zip(
+                tmp["_x"].tolist(), tmp["_y"].tolist(), tmp["_id"].tolist()
+            ):
                 pts.append({"x": float(xi), "y": float(yi), "id": str(pid)})
         else:
             for xi, yi in zip(tmp["_x"].tolist(), tmp["_y"].tolist()):
                 pts.append({"x": float(xi), "y": float(yi), "id": ""})
-        groups_out.append({
-            "name": "All",
-            "points": pts,
-            "mean": compute_group_stats(tmp),
-        })
+        groups_out.append(
+            {
+                "name": "All",
+                "points": pts,
+                "mean": compute_group_stats(tmp),
+            }
+        )
 
     x_unit = ds.units.get(x, "") if isinstance(ds.units, dict) else ""
     y_unit = ds.units.get(y, "") if isinstance(ds.units, dict) else ""
-    return jsonify({
-        "x": x,
-        "y": y,
-        "x_unit": x_unit,
-        "y_unit": y_unit,
-        "group": group if group in df.columns else None,
-        "groups": groups_out,
-    })
+    return jsonify(
+        {
+            "x": x,
+            "y": y,
+            "x_unit": x_unit,
+            "y_unit": y_unit,
+            "group": group if group in df.columns else None,
+            "groups": groups_out,
+        }
+    )
 
 
 @bp.route("/upload", methods=["POST"])  # Handle file upload
@@ -961,7 +1088,9 @@ def upload():
         return redirect(url_for("main.index"))
 
     if not _allowed_file(file.filename):
-        allowed_list = ", ".join(sorted(current_app.config.get("ALLOWED_EXTENSIONS", [])))
+        allowed_list = ", ".join(
+            sorted(current_app.config.get("ALLOWED_EXTENSIONS", []))
+        )
         flash(f"Unsupported file type. Allowed: {allowed_list}")
         return redirect(url_for("main.index"))
 
@@ -978,3 +1107,13 @@ def upload():
     session["dataset_id"] = dataset_id
     flash(f"Loaded {filename}: {ds.df.shape[0]} rows, {ds.df.shape[1]} cols")
     return redirect(url_for("main.index", _anchor="preview"))
+
+
+@bp.get("/dj_test")
+def connect_to_dj():
+    dj.config["database.host"] = "vfsmdatajoint01.fsm.northwestern.edu"
+    dj.config["database.user"] = "Trung"
+    dj.config["database.password"] = "Trung_temppwd"
+
+    c = dj.conn()
+    return str(c.is_connected)
