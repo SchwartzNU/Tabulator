@@ -17,6 +17,7 @@ from .loader import load_dataset, LoadError, DataSet
 from .data_store import store
 from numbers import Number
 import re
+from typing import Optional
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import StratifiedShuffleSplit
@@ -64,7 +65,7 @@ def _get_query_schema() -> str:
     return os.getenv("DJ_QUERY_SCHEMA") or "sln_lab"
 
 
-def _create_virtual_module(conn, schema: str, alias: str | None = None):
+def _create_virtual_module(conn, schema: str, alias: Optional[str] = None):
     module_name = alias or f"dj_{schema.replace('.', '_')}"
     return dj.create_virtual_module(module_name, schema, connection=conn)
 
@@ -225,7 +226,7 @@ def _relation_columns(relation):
     return []
 
 
-def _relation_to_dataframe(relation, conn, query_sql: str | None = None):
+def _relation_to_dataframe(relation, conn, query_sql: Optional[str] = None):
     full_table = getattr(relation, "full_table_name", None)
     if not full_table:
         raise ValueError("Relation is missing table metadata")
