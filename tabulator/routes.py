@@ -16,6 +16,7 @@ from werkzeug.utils import secure_filename
 from .loader import load_dataset, LoadError, DataSet
 from .data_store import store
 from numbers import Number
+import re
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import StratifiedShuffleSplit
@@ -59,8 +60,13 @@ def _get_datajoint_schema() -> str:
     return os.getenv("DJ_SCHEMA") or "sln_results"
 
 
-def _create_virtual_module(conn, schema: str):
-    return dj.create_virtual_module("dj_remote_schema", schema, connection=conn)
+def _get_query_schema() -> str:
+    return os.getenv("DJ_QUERY_SCHEMA") or "sln_lab"
+
+
+def _create_virtual_module(conn, schema: str, alias: str | None = None):
+    module_name = alias or f"dj_{schema.replace('.', '_')}"
+    return dj.create_virtual_module(module_name, schema, connection=conn)
 
 
 def _ensure_relation_instance(obj):
@@ -187,7 +193,39 @@ def _sanitize_dataset(dataset: DataSet):
     return DataSet(df=filtered_df, units=new_units), drop
 
 
-def _relation_to_dataframe(relation, conn):
+def _get_primary_key_columns(relation):
+    attrs = []
+    heading = getattr(relation, "heading", None)
+    if heading is not None:
+        primary = getattr(heading, "primary_attributes", None)
+        if primary and hasattr(primary, "keys"):
+            attrs = list(primary.keys())
+    if not attrs:
+        pk = getattr(relation, "primary_key", None)
+        if isinstance(pk, (list, tuple)):
+            attrs = list(pk)
+    return [str(a) for a in attrs if a]
+
+
+def _extract_unknown_column(error_message: str):
+    match = re.search(r"Unknown column '([^']+)'", error_message)
+    if match:
+        return match.group(1)
+    return None
+
+
+def _relation_columns(relation):
+    try:
+        heading = getattr(relation, "heading", None)
+        attrs = getattr(heading, "attributes", None)
+        if attrs and hasattr(attrs, "keys"):
+            return [str(name) for name in attrs.keys()]
+    except Exception:
+        pass
+    return []
+
+
+def _relation_to_dataframe(relation, conn, query_sql: str | None = None):
     full_table = getattr(relation, "full_table_name", None)
     if not full_table:
         raise ValueError("Relation is missing table metadata")
@@ -197,19 +235,44 @@ def _relation_to_dataframe(relation, conn):
         raise ValueError(f"Unexpected table identifier: {full_table}")
     schema = schema.strip("`")
     table = table.strip("`")
-    sql = f"SELECT * FROM `{schema}`.`{table}`"
-    rows = conn.query(sql, as_dict=True) or []
+    base_sql = f"SELECT * FROM `{schema}`.`{table}`"
+    base_rows = conn.query(base_sql, as_dict=True) or []
+    base_df = pd.DataFrame(base_rows)
+    base_cols = base_df.columns.tolist()
+    # Fallback to heading-defined columns if DataFrame empty
+    if not base_cols:
+        base_cols = _relation_columns(relation)
+    restriction_cols = []
+    if query_sql:
+        q = query_sql.strip().rstrip(";")
+        key_cols = _get_primary_key_columns(relation)
+        if not key_cols:
+            raise ValueError("Cannot determine primary key columns for relation; cannot apply query.")
+        if q.upper().startswith("SELECT"):
+            restriction_sql = q
+        else:
+            restriction_sql = f"SELECT * FROM {q}"
+        restriction_rows = conn.query(restriction_sql, as_dict=True) or []
+        restriction_df = pd.DataFrame(restriction_rows)
+        if restriction_df.empty:
+            base_df = base_df.iloc[0:0]
+        else:
+            available_keys = [k for k in key_cols if k in restriction_df.columns]
+            if not available_keys:
+                raise ValueError(
+                    "Query must include at least one primary key column present in the table: "
+                    + ", ".join(key_cols)
+                )
+            restriction_cols = [c for c in restriction_df.columns if c not in base_cols]
+            payload_cols = available_keys + restriction_cols
+            payload = restriction_df[payload_cols].drop_duplicates()
+            base_df = base_df.merge(payload, on=available_keys, how="inner")
+    rows = base_df.to_dict(orient="records")
     normalized_rows = []
     for row in rows:
-        if not isinstance(row, dict):
-            raise ValueError("Direct query row was not a dict")
-        normalized_rows.append(
-            {k: _normalize_nested_value(v) for k, v in row.items()}
-        )
-    if not normalized_rows:
-        return pd.DataFrame()
-    df = pd.DataFrame(normalized_rows)
-    return df
+        normalized_rows.append({k: _normalize_nested_value(v) for k, v in row.items()})
+    df = pd.DataFrame(normalized_rows) if normalized_rows else pd.DataFrame()
+    return df, restriction_cols
 
 
 def _relation_attribute_descriptions(relation):
@@ -231,12 +294,47 @@ def _relation_attribute_descriptions(relation):
     return descriptions
 
 
+def _load_query_table(conn):
+    schema = _get_query_schema()
+    module = _create_virtual_module(conn, schema)
+    if not hasattr(module, "Query"):
+        raise ValueError(f"Query table not found in schema {schema}")
+    relation_obj = getattr(module, "Query")
+    relation = _ensure_relation_instance(relation_obj)
+    df, _ = _relation_to_dataframe(relation, conn)
+    return df
+
+
+def _get_query_sql(conn, query_name: str):
+    df = _load_query_table(conn)
+    if df.empty:
+        raise ValueError("No queries defined.")
+    if "query_name" not in df.columns or "sql_query" not in df.columns:
+        raise ValueError("Query table does not have expected columns.")
+    match = df[df["query_name"] == query_name]
+    if match.empty:
+        raise ValueError(f"Query {query_name} not found.")
+    row = match.iloc[0]
+    sql = str(row.get("sql_query") or "").strip()
+    if not sql:
+        raise ValueError(f"Query {query_name} has no SQL defined.")
+    return sql
+
+
 @bp.route("/", methods=["GET"])  # Home: upload UI
 def index():
     dataset_id = session.get("dataset_id")
     dataset_label = session.get("dataset_label")
     dataset_source = session.get("dataset_source")
     ds = store.get(dataset_id) if dataset_id else None
+    if dataset_id and ds is None:
+        # Clear stale session references if the in-memory dataset was lost (e.g., after app reload)
+        session.pop("dataset_id", None)
+        session.pop("dataset_label", None)
+        session.pop("dataset_source", None)
+        dataset_id = None
+        dataset_label = None
+        dataset_source = None
     preview_html = None
     info = None
     units_items = None
@@ -281,6 +379,11 @@ def api_db_load():
     table = str(table).strip()
     if not table:
         return jsonify({"error": "missing_table", "detail": "Select a table to load."}), 400
+    query_name = payload.get("query") or payload.get("query_name") or request.form.get("query_name")
+    if query_name:
+        query_name = str(query_name).strip()
+        if not query_name:
+            query_name = None
     try:
         conn = _connect_datajoint()
     except ValueError as exc:
@@ -288,6 +391,12 @@ def api_db_load():
     except Exception as exc:
         return jsonify({"error": "connection_failed", "detail": str(exc)}), 502
     try:
+        query_sql = None
+        if query_name:
+            try:
+                query_sql = _get_query_sql(conn, query_name)
+            except Exception as exc:
+                return jsonify({"error": "query_failed", "detail": str(exc)}), 400
         module = _create_virtual_module(conn, schema)
         if not hasattr(module, table):
             return jsonify({"error": "unknown_table", "detail": f"{table} not found in {schema}."}), 404
@@ -298,7 +407,7 @@ def api_db_load():
             return jsonify({"error": "unloadable_table", "detail": f"{table} cannot be instantiated: {exc}"}), 400
         if not hasattr(relation, "full_table_name"):
             return jsonify({"error": "unloadable_table", "detail": f"{table} has no table metadata."}), 400
-        df = _relation_to_dataframe(relation, conn)
+        df, extra_cols = _relation_to_dataframe(relation, conn, query_sql=query_sql)
         if hasattr(df, "reset_index"):
             df = df.reset_index()
         if not isinstance(df, pd.DataFrame):
@@ -314,6 +423,8 @@ def api_db_load():
         return jsonify({"error": "empty_table", "detail": f"{table} returned no rows."}), 400
     attr_descriptions = _relation_attribute_descriptions(relation)
     units = {str(col): attr_descriptions.get(str(col), "") for col in df.columns}
+    for col in extra_cols or []:
+        units.setdefault(str(col), "")
     ds = DataSet(df=df, units=units)
     ds, dropped = _sanitize_dataset(ds)
     if ds.df.shape[1] == 0:
@@ -357,6 +468,60 @@ def api_db_tables():
         except Exception:
             pass
     return jsonify({"schema": schema, "tables": tables})
+
+
+@bp.get("/api/db/queries")
+def api_db_queries():
+    schema = _get_query_schema()
+    try:
+        conn = _connect_datajoint()
+    except ValueError as exc:
+        return jsonify({"error": "missing_credentials", "detail": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": "connection_failed", "detail": str(exc)}), 502
+    try:
+        df = _load_query_table(conn)
+    except Exception as exc:
+        return jsonify({"error": "query_fetch_failed", "detail": str(exc)}), 502
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    user_queries = []
+    project_queries = []
+    if not df.empty:
+        for _, row in df.iterrows():
+            name = str(row.get("query_name") or "").strip()
+            if not name:
+                continue
+            user_name = str(row.get("user_name") or "").strip()
+            project_name = str(row.get("project_name") or "").strip()
+            if user_name:
+                user_queries.append(
+                    {
+                        "query_name": name,
+                        "user_name": user_name,
+                        "label": f"{user_name} – {name}",
+                    }
+                )
+            if project_name:
+                project_queries.append(
+                    {
+                        "query_name": name,
+                        "project_name": project_name,
+                        "label": f"{project_name} – {name}",
+                    }
+                )
+    user_queries.sort(key=lambda x: (x.get("user_name", "").lower(), x["query_name"].lower()))
+    project_queries.sort(key=lambda x: (x.get("project_name", "").lower(), x["query_name"].lower()))
+    return jsonify(
+        {
+            "schema": schema,
+            "user_queries": user_queries,
+            "project_queries": project_queries,
+        }
+    )
 
 
 @bp.route("/api/columns")

@@ -42,6 +42,20 @@
               </select>
             </span>
           </div>
+          <div class="form-row db-query-picker">
+            <span class="field stretch">
+              <label for="db-user-query">User Query</label>
+              <select id="db-user-query" disabled>
+                <option value="">All users</option>
+              </select>
+            </span>
+            <span class="field stretch">
+              <label for="db-project-query">Project Query</label>
+              <select id="db-project-query" disabled>
+                <option value="">All projects</option>
+              </select>
+            </span>
+          </div>
           <div class="form-row" style="margin-top:12px;">
             <button type="button" id="db-load-btn">Load Table</button>
             <span id="db-load-status" class="muted-note" role="status" aria-live="polite"></span>

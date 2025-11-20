@@ -27,10 +27,14 @@
     if (!buttons.length) return;
     const panels = card.querySelectorAll('.mode-panel');
     const tableSelect = card.querySelector('#db-table-select');
+    const userQuerySelect = card.querySelector('#db-user-query');
+    const projectQuerySelect = card.querySelector('#db-project-query');
     const statusEl = card.querySelector('#db-load-status');
     const dbBtn = card.querySelector('#db-load-btn');
     let tablesFetched = false;
     let fetchingTables = false;
+    let queriesFetched = false;
+    let fetchingQueries = false;
 
     function setStatus(msg) {
       if (statusEl) statusEl.textContent = msg || '';
@@ -88,6 +92,84 @@
       }
     }
 
+    function setQuerySelectMessage(select, text) {
+      if (!select) return;
+      select.innerHTML = '';
+      const option = document.createElement('option');
+      option.value = '';
+      option.textContent = text;
+      select.appendChild(option);
+    }
+
+    async function ensureQueries(force = false) {
+      if ((!userQuerySelect && !projectQuerySelect) || fetchingQueries) return;
+      if (queriesFetched && !force) return;
+      fetchingQueries = true;
+      if (userQuerySelect) {
+        userQuerySelect.disabled = true;
+        setQuerySelectMessage(userQuerySelect, 'Loading user queries…');
+      }
+      if (projectQuerySelect) {
+        projectQuerySelect.disabled = true;
+        setQuerySelectMessage(projectQuerySelect, 'Loading project queries…');
+      }
+      try {
+        const res = await fetch('/api/db/queries', { headers: { 'Accept': 'application/json' } });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error((data && data.detail) || data.error || `Request failed (${res.status})`);
+        }
+        const users = Array.isArray(data.user_queries) ? data.user_queries : [];
+        const projects = Array.isArray(data.project_queries) ? data.project_queries : [];
+        if (userQuerySelect) {
+          const frag = document.createDocumentFragment();
+          const optAll = document.createElement('option');
+          optAll.value = '';
+          optAll.textContent = 'All users';
+          frag.appendChild(optAll);
+          users.forEach((entry) => {
+            const option = document.createElement('option');
+            option.value = entry.query_name || '';
+            option.textContent = entry.label || entry.query_name || '';
+            frag.appendChild(option);
+          });
+          userQuerySelect.innerHTML = '';
+          userQuerySelect.appendChild(frag);
+          userQuerySelect.disabled = users.length === 0;
+        }
+        if (projectQuerySelect) {
+          const frag = document.createDocumentFragment();
+          const optAll = document.createElement('option');
+          optAll.value = '';
+          optAll.textContent = 'All projects';
+          frag.appendChild(optAll);
+          projects.forEach((entry) => {
+            const option = document.createElement('option');
+            option.value = entry.query_name || '';
+            option.textContent = entry.label || entry.query_name || '';
+            frag.appendChild(option);
+          });
+          projectQuerySelect.innerHTML = '';
+          projectQuerySelect.appendChild(frag);
+          projectQuerySelect.disabled = projects.length === 0;
+        }
+        queriesFetched = true;
+      } catch (err) {
+        if (userQuerySelect) {
+          setQuerySelectMessage(userQuerySelect, 'User queries unavailable');
+          userQuerySelect.disabled = true;
+        }
+        if (projectQuerySelect) {
+          setQuerySelectMessage(projectQuerySelect, 'Project queries unavailable');
+          projectQuerySelect.disabled = true;
+        }
+        setStatus(`Failed to load queries: ${err.message}`);
+        queriesFetched = false;
+      } finally {
+        fetchingQueries = false;
+      }
+    }
+
     buttons.forEach((btn) => {
       btn.addEventListener('click', () => {
         const targetId = btn.dataset.target;
@@ -102,15 +184,31 @@
         });
         if (targetId === 'upload-mode-db') {
           void ensureTables(false);
+          void ensureQueries(false);
         }
       });
     });
     if (tableSelect) {
       tableSelect.addEventListener('change', () => setStatus(''));
     }
+    function resetOtherQuery(changed) {
+      if (changed === userQuerySelect && projectQuerySelect) {
+        projectQuerySelect.value = '';
+      } else if (changed === projectQuerySelect && userQuerySelect) {
+        userQuerySelect.value = '';
+      }
+      setStatus('');
+    }
+    if (userQuerySelect) {
+      userQuerySelect.addEventListener('change', () => resetOtherQuery(userQuerySelect));
+    }
+    if (projectQuerySelect) {
+      projectQuerySelect.addEventListener('change', () => resetOtherQuery(projectQuerySelect));
+    }
     if (dbBtn) {
       dbBtn.addEventListener('click', async () => {
         await ensureTables(false);
+        await ensureQueries(false);
         if (!tableSelect || tableSelect.disabled) {
           setStatus('Table list is still loading.');
           return;
@@ -125,13 +223,16 @@
         dbBtn.textContent = 'Loading…';
         setStatus('');
         try {
+          const queryName = (userQuerySelect && userQuerySelect.value) || (projectQuerySelect && projectQuerySelect.value) || '';
+          const body = { table: tableName };
+          if (queryName) body.query_name = queryName;
           const res = await fetch('/api/db/load', {
             method: 'POST',
             headers: {
               'Accept': 'application/json',
               'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ table: tableName }),
+            body: JSON.stringify(body),
           });
           const data = await res.json().catch(() => ({}));
           if (!res.ok) {
@@ -153,6 +254,7 @@
     const activeBtn = card.querySelector('.mode-switch-btn.active');
     if (activeBtn && activeBtn.dataset.target === 'upload-mode-db') {
       void ensureTables(false);
+      void ensureQueries(false);
     }
   }
 

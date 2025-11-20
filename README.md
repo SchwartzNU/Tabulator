@@ -50,13 +50,16 @@ Database connection (DataJoint)
 ```
 DJ_HOST=vfsmdatajoint01.fsm.northwestern.edu
 DJ_USER=AppServer
-DJ_PASSWORD=rujKab-sabmaj-sezqu6
+DJ_PASSWORD=xxxxxxxxx
 DJ_SCHEMA=sln_results  # override if you need a different schema
+DJ_QUERY_SCHEMA=sln_lab   # optional: where sln_lab.Query lives
 ```
 
 - Once populated, switch to the “From Database” tab to fetch the available tables from the configured schema, choose one, and click “Load Table.” The backend opens a DataJoint connection (no custom port needed) and loads the selected relation into Tabulator.
 - Tables are listed and selected using their DataJoint class names (e.g., `DatasetUncaging`) rather than the raw SQL table identifiers.
-- If you change schemas frequently, update `DJ_SCHEMA` in `.env` (defaults to `sln_results`).
+- Use the optional “User Query” or “Project Query” dropdowns to restrict a table using predefined SQL snippets stored in `sln_lab.Query`.
+- If you change schemas frequently, update `DJ_SCHEMA` (and `DJ_QUERY_SCHEMA` if needed) in `.env` (defaults to `sln_results` / `sln_lab`).
+- Only numeric or text columns are kept when loading from files or DataJoint—binary arrays/BLOBs are automatically dropped so the plotting UI only lists usable fields.
 
 Sanity-check locally
 --------------------
