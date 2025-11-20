@@ -238,6 +238,46 @@ def _relation_columns(relation):
     return []
 
 
+def _relation_columns_with_types(relation):
+    cols = []
+    try:
+        heading = getattr(relation, "heading", None)
+        attrs = getattr(heading, "attributes", None)
+        items = attrs.items() if attrs and hasattr(attrs, "items") else []
+        for name, attr in items:
+            if isinstance(attr, dict):
+                typ = attr.get("type") or attr.get("dtype") or ""
+            else:
+                typ = getattr(attr, "type", "") or getattr(attr, "dtype", "")
+            cols.append((str(name), str(typ)))
+    except Exception:
+        pass
+    return cols
+
+
+def _column_type_is_blob(type_name: str) -> bool:
+    t = (type_name or "").lower()
+    return "blob" in t
+
+
+def _select_relation_columns(relation):
+    cols_with_types = _relation_columns_with_types(relation)
+    primary = set(_get_primary_key_columns(relation))
+    selected = []
+    skipped_blob = []
+    for name, typ in cols_with_types:
+        if name in primary:
+            selected.append(name)
+            continue
+        if _column_type_is_blob(typ):
+            skipped_blob.append(name)
+            continue
+        selected.append(name)
+    if not selected:
+        selected = [name for name, _ in cols_with_types] or _relation_columns(relation)
+    return selected, skipped_blob
+
+
 def _relation_to_dataframe(relation, conn, query_sql: Optional[str] = None):
     full_table = getattr(relation, "full_table_name", None)
     if not full_table:
@@ -248,7 +288,11 @@ def _relation_to_dataframe(relation, conn, query_sql: Optional[str] = None):
         raise ValueError(f"Unexpected table identifier: {full_table}")
     schema = schema.strip("`")
     table = table.strip("`")
-    base_sql = f"SELECT * FROM `{schema}`.`{table}`"
+    selected_cols, skipped_blob_cols = _select_relation_columns(relation)
+    if not selected_cols:
+        raise ValueError("No columns available to load from relation")
+    col_sql = ", ".join(f"`{schema}`.`{table}`.`{c}`" for c in selected_cols)
+    base_sql = f"SELECT {col_sql} FROM `{schema}`.`{table}`"
     base_rows = conn.query(base_sql, as_dict=True) or []
     base_df = pd.DataFrame(base_rows)
     base_cols = base_df.columns.tolist()
@@ -285,7 +329,7 @@ def _relation_to_dataframe(relation, conn, query_sql: Optional[str] = None):
     for row in rows:
         normalized_rows.append({k: _normalize_nested_value(v) for k, v in row.items()})
     df = pd.DataFrame(normalized_rows) if normalized_rows else pd.DataFrame()
-    return df, restriction_cols
+    return df, restriction_cols, skipped_blob_cols
 
 
 def _relation_attribute_descriptions(relation):
@@ -314,7 +358,7 @@ def _load_query_table(conn):
         raise ValueError(f"Query table not found in schema {schema}")
     relation_obj = getattr(module, "Query")
     relation = _ensure_relation_instance(relation_obj)
-    df, _ = _relation_to_dataframe(relation, conn)
+    df, _, _ = _relation_to_dataframe(relation, conn)
     return df
 
 
@@ -397,6 +441,7 @@ def api_db_load():
         query_name = str(query_name).strip()
         if not query_name:
             query_name = None
+    skipped_blob_cols = []
     try:
         conn = _connect_datajoint()
     except ValueError as exc:
@@ -420,7 +465,7 @@ def api_db_load():
             return jsonify({"error": "unloadable_table", "detail": f"{table} cannot be instantiated: {exc}"}), 400
         if not hasattr(relation, "full_table_name"):
             return jsonify({"error": "unloadable_table", "detail": f"{table} has no table metadata."}), 400
-        df, extra_cols = _relation_to_dataframe(relation, conn, query_sql=query_sql)
+        df, extra_cols, skipped_blob_cols = _relation_to_dataframe(relation, conn, query_sql=query_sql)
         if hasattr(df, "reset_index"):
             df = df.reset_index()
         if not isinstance(df, pd.DataFrame):
@@ -447,6 +492,8 @@ def api_db_load():
     session["dataset_label"] = table
     session["dataset_source"] = f"{schema}.{table}"
     note = f"Loaded {table} from {schema}: {ds.df.shape[0]} rows, {ds.df.shape[1]} cols."
+    if skipped_blob_cols:
+        note += f" Skipped {len(skipped_blob_cols)} blob column(s)."
     if dropped:
         note += f" Skipped {len(dropped)} unsupported column(s)."
     flash(note)
@@ -456,6 +503,8 @@ def api_db_load():
             "dataset_id": dataset_id,
             "rows": int(ds.df.shape[0]),
             "cols": int(ds.df.shape[1]),
+            "skipped_blob_columns": [str(c) for c in skipped_blob_cols],
+            "dropped_columns": [str(c) for c in dropped],
             "redirect": url_for("main.index", _anchor="dataset-card"),
         }
     )
