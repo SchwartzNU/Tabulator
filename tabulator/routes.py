@@ -33,6 +33,15 @@ bp = Blueprint("main", __name__)
 dotenv.load_dotenv()
 
 
+@bp.before_app_request
+def _ensure_clean_session():
+    if not session.get("_tabulator_session_ready"):
+        session["_tabulator_session_ready"] = True
+        session.pop("dataset_id", None)
+        session.pop("dataset_label", None)
+        session.pop("dataset_source", None)
+
+
 def _allowed_file(filename: str) -> bool:
     allowed = current_app.config.get("ALLOWED_EXTENSIONS", set())
     return "." in filename and filename.rsplit(".", 1)[1].lower() in allowed
