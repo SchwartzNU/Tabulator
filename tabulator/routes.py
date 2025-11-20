@@ -1,4 +1,5 @@
 import os
+import inspect
 import dotenv
 from flask import (
     Blueprint,
@@ -14,6 +15,7 @@ from flask import (
 from werkzeug.utils import secure_filename
 from .loader import load_dataset, LoadError, DataSet
 from .data_store import store
+from numbers import Number
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import StratifiedShuffleSplit
@@ -34,16 +36,215 @@ def _allowed_file(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in allowed
 
 
+def _get_datajoint_credentials():
+    host = os.getenv("DJ_HOST")
+    user = os.getenv("DJ_USER")
+    password = os.getenv("DJ_PASSWORD")
+    missing = [name for name, value in (("DJ_HOST", host), ("DJ_USER", user), ("DJ_PASSWORD", password)) if not value]
+    if missing:
+        raise ValueError(f"Missing environment variables: {', '.join(missing)}")
+    return {
+        "host": host,
+        "user": user,
+        "password": password,
+    }
+
+
+def _connect_datajoint():
+    creds = _get_datajoint_credentials()
+    return dj.conn(host=creds["host"], user=creds["user"], password=creds["password"])
+
+
+def _get_datajoint_schema() -> str:
+    return os.getenv("DJ_SCHEMA") or "sln_results"
+
+
+def _create_virtual_module(conn, schema: str):
+    return dj.create_virtual_module("dj_remote_schema", schema, connection=conn)
+
+
+def _ensure_relation_instance(obj):
+    if inspect.isclass(obj):
+        return obj()
+    return obj
+
+
+def _list_schema_relations(module):
+    relations = []
+    for name in dir(module):
+        if name.startswith("_"):
+            continue
+        attr = getattr(module, name)
+        try:
+            relation_instance = _ensure_relation_instance(attr)
+        except Exception:
+            continue
+        if not hasattr(relation_instance, "full_table_name"):
+            continue
+        if getattr(relation_instance, "is_part", False):
+            continue
+        full_table_name = getattr(relation_instance, "full_table_name", None)
+        relations.append(
+            {
+                "name": name,
+                "full_table": str(full_table_name) if full_table_name else None,
+            }
+        )
+    relations.sort(key=lambda r: r["name"].lower())
+    return relations
+
+
+def _normalize_nested_value(value):
+    if isinstance(value, memoryview):
+        value = value.tobytes()
+    if isinstance(value, (bytes, bytearray)):
+        return value
+    if isinstance(value, np.ndarray):
+        if value.ndim == 0:
+            return value.item()
+        return value.tolist()
+    if isinstance(value, (list, tuple)):
+        return [_normalize_nested_value(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _normalize_nested_value(v) for k, v in value.items()}
+    return value
+
+
+def _sequence_shape(value, max_dims=2):
+    shape = []
+    current = value
+    for _ in range(max_dims):
+        if isinstance(current, np.ndarray):
+            shape.extend(list(current.shape))
+            break
+        if isinstance(current, (list, tuple)):
+            shape.append(len(current))
+            if len(current) == 0:
+                break
+            current = current[0]
+            continue
+        break
+    return " x ".join(str(s) for s in shape if s is not None) if shape else ""
+
+
+def _preview_value(value):
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (Number, np.number, np.bool_)):
+        try:
+            return value.item()
+        except AttributeError:
+            return value
+    if isinstance(value, (pd.Timestamp, pd.Timedelta)):
+        return value
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return f"<bytes {len(value)}>"
+    if isinstance(value, (np.ndarray, list, tuple)):
+        shape = _sequence_shape(value)
+        if shape:
+            return f"<array {shape}>"
+        length = len(value) if hasattr(value, "__len__") else "?"
+        return f"<array len={length}>"
+    if isinstance(value, dict):
+        return f"<dict keys={len(value)}>"
+    return f"<{type(value).__name__}>"
+
+
+def _is_simple_value(value):
+    return isinstance(value, (str, Number, np.number, np.bool_, bool))
+
+
+def _column_is_simple(series, check_limit=1000):
+    checked = 0
+    for val in series:
+        if pd.isna(val):
+            continue
+        if not _is_simple_value(val):
+            return False
+        checked += 1
+        if checked >= check_limit:
+            break
+    return True
+
+
+def _sanitize_dataset(dataset: DataSet):
+    df = dataset.df
+    keep = []
+    drop = []
+    for col in df.columns:
+        series = df[col]
+        if _column_is_simple(series):
+            keep.append(col)
+        else:
+            drop.append(col)
+    if keep:
+        filtered_df = df[keep].copy()
+    else:
+        filtered_df = pd.DataFrame(index=df.index)
+    new_units = {str(c): dataset.units.get(c, "") for c in keep}
+    return DataSet(df=filtered_df, units=new_units), drop
+
+
+def _relation_to_dataframe(relation, conn):
+    full_table = getattr(relation, "full_table_name", None)
+    if not full_table:
+        raise ValueError("Relation is missing table metadata")
+    try:
+        schema, table = full_table.split(".", 1)
+    except ValueError:
+        raise ValueError(f"Unexpected table identifier: {full_table}")
+    schema = schema.strip("`")
+    table = table.strip("`")
+    sql = f"SELECT * FROM `{schema}`.`{table}`"
+    rows = conn.query(sql, as_dict=True) or []
+    normalized_rows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("Direct query row was not a dict")
+        normalized_rows.append(
+            {k: _normalize_nested_value(v) for k, v in row.items()}
+        )
+    if not normalized_rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(normalized_rows)
+    return df
+
+
+def _relation_attribute_descriptions(relation):
+    descriptions = {}
+    try:
+        heading = getattr(relation, "heading", None)
+        attributes = getattr(heading, "attributes", None) if heading else None
+        items = attributes.items() if attributes and hasattr(attributes, "items") else []
+        for name, attr in items:
+            comment = ""
+            if isinstance(attr, dict):
+                comment = attr.get("comment") or attr.get("description") or ""
+            else:
+                comment = getattr(attr, "comment", "") or getattr(attr, "description", "")
+            if comment:
+                descriptions[str(name)] = str(comment)
+    except Exception:
+        pass
+    return descriptions
+
+
 @bp.route("/", methods=["GET"])  # Home: upload UI
 def index():
     dataset_id = session.get("dataset_id")
+    dataset_label = session.get("dataset_label")
+    dataset_source = session.get("dataset_source")
     ds = store.get(dataset_id) if dataset_id else None
     preview_html = None
     info = None
     units_items = None
     if ds is not None:
         try:
-            preview_html = ds.df.head(10).to_html(classes=["preview"], border=0)
+            preview_df = ds.df.head(10).copy()
+            preview_df = preview_df.applymap(_preview_value)
+            preview_html = preview_df.to_html(classes=["preview"], border=0)
             info = {
                 "rows": int(ds.df.shape[0]),
                 "cols": int(ds.df.shape[1]),
@@ -59,10 +260,103 @@ def index():
     return render_template(
         "index.html",
         dataset_id=dataset_id,
+        dataset_label=dataset_label or dataset_id,
+        dataset_source=dataset_source,
         info=info,
         preview_html=preview_html,
         units_items=units_items,
+        db_host=os.getenv("DJ_HOST"),
+        db_user=os.getenv("DJ_USER"),
+        db_schema=os.getenv("DJ_SCHEMA"),
     )
+
+
+@bp.post("/api/db/load")
+def api_db_load():
+    schema = _get_datajoint_schema()
+    payload = request.get_json(silent=True) or {}
+    table = payload.get("table") or request.form.get("table")
+    if not table:
+        return jsonify({"error": "missing_table", "detail": "Select a table to load."}), 400
+    table = str(table).strip()
+    if not table:
+        return jsonify({"error": "missing_table", "detail": "Select a table to load."}), 400
+    try:
+        conn = _connect_datajoint()
+    except ValueError as exc:
+        return jsonify({"error": "missing_credentials", "detail": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": "connection_failed", "detail": str(exc)}), 502
+    try:
+        module = _create_virtual_module(conn, schema)
+        if not hasattr(module, table):
+            return jsonify({"error": "unknown_table", "detail": f"{table} not found in {schema}."}), 404
+        relation_obj = getattr(module, table)
+        try:
+            relation = _ensure_relation_instance(relation_obj)
+        except Exception as exc:
+            return jsonify({"error": "unloadable_table", "detail": f"{table} cannot be instantiated: {exc}"}), 400
+        if not hasattr(relation, "full_table_name"):
+            return jsonify({"error": "unloadable_table", "detail": f"{table} has no table metadata."}), 400
+        df = _relation_to_dataframe(relation, conn)
+        if hasattr(df, "reset_index"):
+            df = df.reset_index()
+        if not isinstance(df, pd.DataFrame):
+            return jsonify({"error": "bad_format", "detail": f"{table} did not return a DataFrame."}), 500
+    except Exception as exc:
+        return jsonify({"error": "load_failed", "detail": str(exc)}), 502
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    if df.empty:
+        return jsonify({"error": "empty_table", "detail": f"{table} returned no rows."}), 400
+    attr_descriptions = _relation_attribute_descriptions(relation)
+    units = {str(col): attr_descriptions.get(str(col), "") for col in df.columns}
+    ds = DataSet(df=df, units=units)
+    ds, dropped = _sanitize_dataset(ds)
+    if ds.df.shape[1] == 0:
+        return jsonify({"error": "no_simple_columns", "detail": f"{table} does not contain numeric or text columns Tabulator can use."}), 400
+    dataset_id = store.put(ds)
+    session["dataset_id"] = dataset_id
+    session["dataset_label"] = table
+    session["dataset_source"] = f"{schema}.{table}"
+    note = f"Loaded {table} from {schema}: {ds.df.shape[0]} rows, {ds.df.shape[1]} cols."
+    if dropped:
+        note += f" Skipped {len(dropped)} unsupported column(s)."
+    flash(note)
+    return jsonify(
+        {
+            "message": note,
+            "dataset_id": dataset_id,
+            "rows": int(ds.df.shape[0]),
+            "cols": int(ds.df.shape[1]),
+            "redirect": url_for("main.index", _anchor="dataset-card"),
+        }
+    )
+
+
+@bp.get("/api/db/tables")
+def api_db_tables():
+    schema = _get_datajoint_schema()
+    try:
+        conn = _connect_datajoint()
+    except ValueError as exc:
+        return jsonify({"error": "missing_credentials", "detail": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": "connection_failed", "detail": str(exc)}), 502
+    try:
+        module = _create_virtual_module(conn, schema)
+        tables = _list_schema_relations(module)
+    except Exception as exc:
+        return jsonify({"error": "list_failed", "detail": str(exc)}), 502
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return jsonify({"schema": schema, "tables": tables})
 
 
 @bp.route("/api/columns")
@@ -1105,9 +1399,18 @@ def upload():
     except LoadError as e:
         flash(f"Uploaded but failed to parse: {e}")
         return redirect(url_for("main.index"))
+    ds, dropped = _sanitize_dataset(ds)
+    if ds.df.shape[1] == 0:
+        flash("Uploaded data has no numeric or text columns that Tabulator can use.")
+        return redirect(url_for("main.index"))
     dataset_id = store.put(ds)
     session["dataset_id"] = dataset_id
-    flash(f"Loaded {filename}: {ds.df.shape[0]} rows, {ds.df.shape[1]} cols")
+    session["dataset_label"] = filename
+    session["dataset_source"] = "upload"
+    msg = f"Loaded {filename}: {ds.df.shape[0]} rows, {ds.df.shape[1]} cols"
+    if dropped:
+        msg += f" (skipped {len(dropped)} unsupported column(s))"
+    flash(msg)
     return redirect(url_for("main.index", _anchor="preview"))
 
 

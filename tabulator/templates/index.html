@@ -11,11 +11,42 @@
         </button>
       </div>
       <div class="card-body" id="upload-body">
-        <p>Accepted formats: .csv, .h5, .pkl/.pickle, .mat</p>
-        <form id="uploadForm" action="{{ url_for('main.upload') }}" method="post" enctype="multipart/form-data">
-          <input type="file" id="datafile" name="datafile" accept=".csv,.h5,.pkl,.pickle,.mat" />
-          <button type="submit">Upload</button>
-        </form>
+        <p>Load a dataset into Tabulator by uploading a file or connecting directly to a database.</p>
+        <div class="mode-switch" role="tablist" aria-label="Data source">
+          <button type="button" class="mode-switch-btn active" role="tab" aria-selected="true" data-target="upload-mode-file">Upload File</button>
+          <button type="button" class="mode-switch-btn" role="tab" aria-selected="false" data-target="upload-mode-db">From Database</button>
+        </div>
+
+        <div id="upload-mode-file" class="mode-panel">
+          <p class="muted-note">Accepted formats: .csv, .h5, .pkl/.pickle, .mat</p>
+          <form id="uploadForm" action="{{ url_for('main.upload') }}" method="post" enctype="multipart/form-data">
+            <input type="file" id="datafile" name="datafile" accept=".csv,.h5,.pkl,.pickle,.mat" />
+            <button type="submit">Upload</button>
+          </form>
+        </div>
+
+        <div id="upload-mode-db" class="mode-panel" hidden>
+          <p class="muted-note">
+            Tabulator will connect to the lab database using stored credentials and the DataJoint client.
+          </p>
+          <div class="db-credentials-hint">
+            <div><strong>Host:</strong> {{ db_host or 'Configured in .env' }}</div>
+            <div><strong>User:</strong> {{ db_user or 'Configured in .env' }}</div>
+            <div><strong>Schema:</strong> {{ db_schema or 'sln_results (default)' }}</div>
+          </div>
+          <div class="form-row db-table-picker">
+            <span class="field stretch">
+              <label for="db-table-select">Table</label>
+              <select id="db-table-select" disabled>
+                <option>Switch to this tab to load tables…</option>
+              </select>
+            </span>
+          </div>
+          <div class="form-row" style="margin-top:12px;">
+            <button type="button" id="db-load-btn">Load Table</button>
+            <span id="db-load-status" class="muted-note" role="status" aria-live="polite"></span>
+          </div>
+        </div>
       </div>
       </section>
 
@@ -30,7 +61,16 @@
       </div>
       <div class="card-body" id="dataset-body">
         <div class="dataset-meta">
-          <div><strong>ID:</strong> {{ dataset_id }}</div>
+          <div><strong>ID:</strong> {{ dataset_label or dataset_id }}</div>
+          {% if dataset_source %}
+            <div><strong>Source:</strong>
+              {% if dataset_source == 'upload' %}
+                Uploaded file
+              {% else %}
+                {{ dataset_source }}
+              {% endif %}
+            </div>
+          {% endif %}
           <div><strong>Shape:</strong> {{ info.rows }} rows × {{ info.cols }} cols</div>
           <details class="columns-details">
             <summary>Columns ({{ info.cols }})</summary>
@@ -47,12 +87,12 @@
             <div class="table-preview">{{ preview_html | safe }}</div>
           </details>
         {% endif %}
-        {% if units_items %}
+          {% if units_items %}
           <details class="units-details">
-            <summary>Units</summary>
+            <summary>Units / Description</summary>
             <div class="table-preview units-table-wrap">
               <table>
-                <thead><tr><th>Variable</th><th>Unit</th></tr></thead>
+                <thead><tr><th>Variable</th><th>Units / Description</th></tr></thead>
                 <tbody>
                   {% for k, u in units_items %}
                     <tr><td>{{ k }}</td><td>{{ u }}</td></tr>

@@ -20,6 +20,142 @@
     });
   }
 
+  function setupUploadCard() {
+    const card = document.getElementById('upload-card');
+    if (!card) return;
+    const buttons = card.querySelectorAll('.mode-switch-btn');
+    if (!buttons.length) return;
+    const panels = card.querySelectorAll('.mode-panel');
+    const tableSelect = card.querySelector('#db-table-select');
+    const statusEl = card.querySelector('#db-load-status');
+    const dbBtn = card.querySelector('#db-load-btn');
+    let tablesFetched = false;
+    let fetchingTables = false;
+
+    function setStatus(msg) {
+      if (statusEl) statusEl.textContent = msg || '';
+    }
+
+    function setSelectMessage(text) {
+      if (!tableSelect) return;
+      tableSelect.innerHTML = '';
+      const option = document.createElement('option');
+      option.textContent = text;
+      option.value = '';
+      tableSelect.appendChild(option);
+    }
+
+    async function ensureTables(force = false) {
+      if (!tableSelect) return;
+      if (fetchingTables) return;
+      if (tablesFetched && !force) return;
+      fetchingTables = true;
+      tableSelect.disabled = true;
+      setSelectMessage(force ? 'Refreshing tables…' : 'Loading tables…');
+      try {
+        const res = await fetch('/api/db/tables', { headers: { 'Accept': 'application/json' } });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error((data && data.detail) || data.error || `Request failed (${res.status})`);
+        }
+        const tables = Array.isArray(data.tables) ? data.tables : [];
+        if (!tables.length) {
+          setSelectMessage('No tables found for this schema.');
+          setStatus('No tables are available in the configured schema.');
+          tablesFetched = false;
+          return;
+        }
+        const fragment = document.createDocumentFragment();
+        tables.forEach((entry) => {
+          const name = (entry && entry.name) || entry;
+          if (!name) return;
+          const option = document.createElement('option');
+          option.value = name;
+          option.textContent = name;
+          fragment.appendChild(option);
+        });
+        tableSelect.innerHTML = '';
+        tableSelect.appendChild(fragment);
+        tableSelect.disabled = false;
+        tablesFetched = true;
+        setStatus('');
+      } catch (err) {
+        setSelectMessage('Unable to load tables.');
+        setStatus(`Failed to load tables: ${err.message}`);
+        tablesFetched = false;
+      } finally {
+        fetchingTables = false;
+      }
+    }
+
+    buttons.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const targetId = btn.dataset.target;
+        if (!targetId || btn.classList.contains('active')) return;
+        buttons.forEach((other) => {
+          const isActive = other === btn;
+          other.classList.toggle('active', isActive);
+          other.setAttribute('aria-selected', isActive ? 'true' : 'false');
+        });
+        panels.forEach((panel) => {
+          panel.hidden = panel.id !== targetId;
+        });
+        if (targetId === 'upload-mode-db') {
+          void ensureTables(false);
+        }
+      });
+    });
+    if (tableSelect) {
+      tableSelect.addEventListener('change', () => setStatus(''));
+    }
+    if (dbBtn) {
+      dbBtn.addEventListener('click', async () => {
+        await ensureTables(false);
+        if (!tableSelect || tableSelect.disabled) {
+          setStatus('Table list is still loading.');
+          return;
+        }
+        const tableName = tableSelect.value;
+        if (!tableName) {
+          setStatus('Select a table to load.');
+          return;
+        }
+        const prevText = dbBtn.textContent;
+        dbBtn.disabled = true;
+        dbBtn.textContent = 'Loading…';
+        setStatus('');
+        try {
+          const res = await fetch('/api/db/load', {
+            method: 'POST',
+            headers: {
+              'Accept': 'application/json',
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ table: tableName }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            throw new Error((data && data.detail) || data.error || `Request failed (${res.status})`);
+          }
+          const target = data.redirect || window.location.pathname + window.location.search + window.location.hash;
+          const url = new URL(target, window.location.origin);
+          url.searchParams.set('_dj_refresh', Date.now().toString());
+          setStatus(`${data.message || 'Table loaded.'} Showing data…`);
+          setTimeout(() => { window.location.assign(url.toString()); }, 50);
+        } catch (err) {
+          setStatus(`Load failed: ${err.message}`);
+        } finally {
+          dbBtn.disabled = false;
+          dbBtn.textContent = prevText;
+        }
+      });
+    }
+    const activeBtn = card.querySelector('.mode-switch-btn.active');
+    if (activeBtn && activeBtn.dataset.target === 'upload-mode-db') {
+      void ensureTables(false);
+    }
+  }
+
   let plotSeq = 0;
 
   function createPlotCard() {
@@ -78,6 +214,7 @@
 
   onReady(() => {
     setupCollapsibles(document);
+    setupUploadCard();
     setupPlotsUI();
     setupPCA();
     setupDR();

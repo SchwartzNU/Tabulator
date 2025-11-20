@@ -41,6 +41,23 @@ Notes
 - A simple in-memory LRU cache stores the most recent 10 datasets; the current dataset’s ID is kept in the session.
 - Max upload size is 100 MB by default. Adjust in `tabulator/config.py` if needed.
 
+Database connection (DataJoint)
+-------------------------------
+
+- The “Load From Database” option reuses stored credentials to open a DataJoint connection with `dj.conn`.
+- Create a `.env` file (already gitignored) with the required values:
+
+```
+DJ_HOST=vfsmdatajoint01.fsm.northwestern.edu
+DJ_USER=AppServer
+DJ_PASSWORD=rujKab-sabmaj-sezqu6
+DJ_SCHEMA=sln_results  # override if you need a different schema
+```
+
+- Once populated, switch to the “From Database” tab to fetch the available tables from the configured schema, choose one, and click “Load Table.” The backend opens a DataJoint connection (no custom port needed) and loads the selected relation into Tabulator.
+- Tables are listed and selected using their DataJoint class names (e.g., `DatasetUncaging`) rather than the raw SQL table identifiers.
+- If you change schemas frequently, update `DJ_SCHEMA` in `.env` (defaults to `sln_results`).
+
 Sanity-check locally
 --------------------
 
