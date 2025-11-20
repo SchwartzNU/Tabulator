@@ -26,6 +26,12 @@ class DataStore:
             self._store.move_to_end(key)
         return obj
 
+    def remove(self, key: str) -> bool:
+        if key in self._store:
+            del self._store[key]
+            return True
+        return False
+
     def _evict_if_needed(self) -> None:
         while len(self._store) > self.max_items:
             self._store.popitem(last=False)

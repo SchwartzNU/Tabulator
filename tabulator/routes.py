@@ -449,6 +449,18 @@ def api_db_load():
     )
 
 
+@bp.post("/api/clear")
+def api_clear_dataset():
+    dataset_id = session.pop("dataset_id", None)
+    session.pop("dataset_label", None)
+    session.pop("dataset_source", None)
+    removed = False
+    if dataset_id:
+        removed = store.remove(dataset_id)
+    flash("Cleared loaded data.")
+    return jsonify({"cleared": bool(dataset_id), "removed": removed})
+
+
 @bp.get("/api/db/tables")
 def api_db_tables():
     schema = _get_datajoint_schema()

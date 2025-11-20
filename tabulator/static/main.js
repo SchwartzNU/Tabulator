@@ -317,6 +317,22 @@
   onReady(() => {
     setupCollapsibles(document);
     setupUploadCard();
+    const clearBtn = document.getElementById('clear-data-btn');
+    if (clearBtn) {
+      clearBtn.addEventListener('click', async () => {
+        clearBtn.disabled = true;
+        clearBtn.textContent = 'Clearing…';
+        try {
+          const res = await fetch('/api/clear', { method: 'POST', headers: { 'Accept': 'application/json' } });
+          if (!res.ok) throw new Error('Failed to clear');
+        } catch (err) {
+          console.error(err);
+        } finally {
+          const dest = window.location.pathname + window.location.search;
+          window.location.assign(dest);
+        }
+      });
+    }
     setupPlotsUI();
     setupPCA();
     setupDR();
