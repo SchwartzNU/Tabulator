@@ -87,8 +87,11 @@ def _ensure_relation_instance(obj):
 
 def _list_schema_relations(module):
     relations = []
+    allowed_prefixes = ("Epoch", "Dataset", "Cell", "Animal", "Experiment")
     for name in dir(module):
         if name.startswith("_"):
+            continue
+        if not name.startswith(allowed_prefixes):
             continue
         attr = getattr(module, name)
         try:
