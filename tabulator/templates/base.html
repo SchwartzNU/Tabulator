@@ -6,7 +6,7 @@
     <title>Tabulator</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
   </head>
-  <body>
+  <body data-dataset-id="{{ dataset_id|default('') }}">
     <header class="site-header">
       <h1>Tabulator</h1>
     </header>

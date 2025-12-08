@@ -42,6 +42,13 @@ def _ensure_clean_session():
         session.pop("dataset_source", None)
 
 
+def _get_dataset_from_request():
+    """Return (dataset, dataset_id) from query param or session."""
+    dataset_id = request.args.get("dataset_id") or session.get("dataset_id")
+    ds = store.get(dataset_id) if dataset_id else None
+    return ds, dataset_id
+
+
 def _allowed_file(filename: str) -> bool:
     allowed = current_app.config.get("ALLOWED_EXTENSIONS", set())
     return "." in filename and filename.rsplit(".", 1)[1].lower() in allowed
@@ -600,8 +607,7 @@ def api_db_queries():
 
 @bp.route("/api/columns")
 def api_columns():
-    dataset_id = session.get("dataset_id")
-    ds = store.get(dataset_id) if dataset_id else None
+    ds, dataset_id = _get_dataset_from_request()
     if ds is None:
         return jsonify({"error": "no_dataset"}), 404
     df = ds.df
@@ -627,8 +633,7 @@ def api_pca():
     - Drops rows with NaNs across selected numeric columns.
     - Returns explained_variance_ratio per component and cumulative.
     """
-    dataset_id = session.get("dataset_id")
-    ds = store.get(dataset_id) if dataset_id else None
+    ds, dataset_id = _get_dataset_from_request()
     if ds is None:
         return jsonify({"error": "no_dataset"}), 404
     df = ds.df
@@ -712,8 +717,7 @@ def api_pca_scores():
     pcs_param = (request.args.get("pcs") or "").strip()
     color_col = request.args.get("color")
 
-    dataset_id = session.get("dataset_id")
-    ds = store.get(dataset_id) if dataset_id else None
+    ds, dataset_id = _get_dataset_from_request()
     if ds is None:
         return jsonify({"error": "no_dataset"}), 404
     df = ds.df
@@ -855,8 +859,7 @@ def api_classify_train():
     if not (0 < test_frac < 1):
         return jsonify({"error": "bad_test_frac"}), 400
 
-    dataset_id = session.get("dataset_id")
-    ds = store.get(dataset_id) if dataset_id else None
+    ds, dataset_id = _get_dataset_from_request()
     if ds is None:
         return jsonify({"error": "no_dataset"}), 404
 
@@ -1163,8 +1166,7 @@ def api_dimred():
     if mode not in {"all", "pcs"}:
         return jsonify({"error": "bad_mode"}), 400
 
-    dataset_id = session.get("dataset_id")
-    ds = store.get(dataset_id) if dataset_id else None
+    ds, dataset_id = _get_dataset_from_request()
     if ds is None:
         return jsonify({"error": "no_dataset"}), 404
     df = ds.df
@@ -1406,8 +1408,7 @@ def api_plot_bar():
     if not value or not group:
         return jsonify({"error": "missing_params"}), 400
 
-    dataset_id = session.get("dataset_id")
-    ds = store.get(dataset_id) if dataset_id else None
+    ds, dataset_id = _get_dataset_from_request()
     if ds is None:
         return jsonify({"error": "no_dataset"}), 404
     df = ds.df
@@ -1493,8 +1494,7 @@ def api_plot_scatter():
     if not x or not y:
         return jsonify({"error": "missing_params"}), 400
 
-    dataset_id = session.get("dataset_id")
-    ds = store.get(dataset_id) if dataset_id else None
+    ds, dataset_id = _get_dataset_from_request()
     if ds is None:
         return jsonify({"error": "no_dataset"}), 404
     df = ds.df

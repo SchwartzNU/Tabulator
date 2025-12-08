@@ -7,6 +7,21 @@
     }
   }
 
+  const datasetId = document.body?.dataset?.datasetId || '';
+
+  function withDatasetId(url) {
+    if (!datasetId) return url;
+    try {
+      const u = new URL(url, window.location.origin);
+      if (!u.searchParams.has('dataset_id')) {
+        u.searchParams.set('dataset_id', datasetId);
+      }
+      return u.pathname + u.search;
+    } catch {
+      return url;
+    }
+  }
+
   function setupCollapsibles(root = document) {
     root.addEventListener('click', (e) => 
     {
@@ -57,7 +72,7 @@
       tableSelect.disabled = true;
       setSelectMessage(force ? 'Refreshing tables…' : 'Loading tables…');
       try {
-        const res = await fetch('/api/db/tables', { headers: { 'Accept': 'application/json' } });
+        const res = await fetch('/api/db/tables', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           throw new Error((data && data.detail) || data.error || `Request failed (${res.status})`);
@@ -114,7 +129,7 @@
         setQuerySelectMessage(projectQuerySelect, 'Loading project queries…');
       }
       try {
-        const res = await fetch('/api/db/queries', { headers: { 'Accept': 'application/json' } });
+        const res = await fetch('/api/db/queries', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           throw new Error((data && data.detail) || data.error || `Request failed (${res.status})`);
@@ -232,6 +247,7 @@
               'Accept': 'application/json',
               'Content-Type': 'application/json',
             },
+            credentials: 'same-origin',
             body: JSON.stringify(body),
           });
           const data = await res.json().catch(() => ({}));
@@ -323,7 +339,7 @@
         clearBtn.disabled = true;
         clearBtn.textContent = 'Clearing…';
         try {
-          const res = await fetch('/api/clear', { method: 'POST', headers: { 'Accept': 'application/json' } });
+          const res = await fetch('/api/clear', { method: 'POST', headers: { 'Accept': 'application/json' }, credentials: 'same-origin' });
           if (!res.ok) throw new Error('Failed to clear');
         } catch (err) {
           console.error(err);
@@ -341,7 +357,8 @@
 
   // -------- Plot helpers --------
   async function fetchJSON(url) {
-    const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+    const target = withDatasetId(url);
+    const res = await fetch(target, { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' });
     if (!res.ok) {
       let detail = '';
       try {
@@ -975,9 +992,10 @@
           patience: Math.max(1, parseInt(patienceInp?.value || '5', 10)),
           early_stop: !!(earlyChk && earlyChk.checked),
         };
-        const res = await fetch('/api/classify/train', {
+        const res = await fetch(withDatasetId('/api/classify/train'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          credentials: 'same-origin',
           body: JSON.stringify(body)
         });
         if (!res.ok) {
