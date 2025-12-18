@@ -267,6 +267,28 @@ def _column_type_is_blob(type_name: str) -> bool:
     return "blob" in t
 
 
+def _execute_query(conn, sql: str, *, as_dict: bool = False):
+    """Run a SQL query without triggering Python %-formatting on percent signs."""
+    try:
+        return conn.query(sql, args=None, as_dict=as_dict)
+    except TypeError as exc:
+        msg = str(exc).lower()
+        # Older DataJoint versions may not accept args kwarg
+        if "unexpected keyword argument 'args'" in msg:
+            return conn.query(sql, None, as_dict)
+        # Queries containing % characters (e.g., LIKE "%foo%") can be treated as
+        # format strings if args is an empty tuple; escape and retry once.
+        if "not enough arguments for format string" in msg:
+            escaped_sql = sql.replace("%", "%%")
+            try:
+                return conn.query(escaped_sql, args=None, as_dict=as_dict)
+            except TypeError as exc2:
+                if "unexpected keyword argument 'args'" in str(exc2).lower():
+                    return conn.query(escaped_sql, None, as_dict)
+                raise
+        raise
+
+
 def _select_relation_columns(relation):
     cols_with_types = _relation_columns_with_types(relation)
     primary = set(_get_primary_key_columns(relation))
@@ -300,7 +322,7 @@ def _relation_to_dataframe(relation, conn, query_sql: Optional[str] = None):
         raise ValueError("No columns available to load from relation")
     col_sql = ", ".join(f"`{schema}`.`{table}`.`{c}`" for c in selected_cols)
     base_sql = f"SELECT {col_sql} FROM `{schema}`.`{table}`"
-    base_rows = conn.query(base_sql, as_dict=True) or []
+    base_rows = _execute_query(conn, base_sql, as_dict=True) or []
     base_df = pd.DataFrame(base_rows)
     base_cols = base_df.columns.tolist()
     # Fallback to heading-defined columns if DataFrame empty
@@ -316,7 +338,7 @@ def _relation_to_dataframe(relation, conn, query_sql: Optional[str] = None):
             restriction_sql = q
         else:
             restriction_sql = f"SELECT * FROM {q}"
-        restriction_rows = conn.query(restriction_sql, as_dict=True) or []
+        restriction_rows = _execute_query(conn, restriction_sql, as_dict=True) or []
         restriction_df = pd.DataFrame(restriction_rows)
         if restriction_df.empty:
             base_df = base_df.iloc[0:0]
