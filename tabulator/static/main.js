@@ -300,6 +300,7 @@
             <select id="${id}-type" class="plot-type">
               <option value="bar">bar</option>
               <option value="scatter">scatter</option>
+              <option value="line_by_row">Line plot by row</option>
               <option value="heatmap">heatmap</option>
             </select>
           </span>
@@ -409,6 +410,37 @@
     // No WYSIWYG edit toggle — simplified toolbar
   }
 
+  function displayCategoryLabel(value) {
+    return value == null || value === '' ? '(blank)' : String(value);
+  }
+
+  function formatCountLabel(baseText, rowCount, animalCount) {
+    const animalText = animalCount == null || animalCount === '' ? '?' : animalCount;
+    return `${baseText} (n=${rowCount} rows, ${animalText} animals)`;
+  }
+
+  function stripCountLabel(text) {
+    const value = String(text ?? '');
+    return value
+      .replace(/\s*\(n=\s*[^)]*rows,\s*[^)]*animals\)\s*$/, '')
+      .replace(/\s*<br>\s*n=\s*.*$/i, '')
+      .trim();
+  }
+
+  function formatPValueThreshold(pValue) {
+    const p = Number(pValue);
+    if (!Number.isFinite(p) || p < 0) return 'p=?';
+    if (p === 0) return 'p<1E-300';
+    if (p >= 1) return 'p=1';
+    let exponent = Math.ceil(Math.log10(p));
+    let threshold = Math.pow(10, exponent);
+    if (threshold <= p) {
+      exponent += 1;
+      threshold *= 10;
+    }
+    return `p<1E${exponent}`;
+  }
+
   async function initializePlotCard(card) {
     const typeSel = card.querySelector('.plot-type');
     const configEl = card.querySelector('.plot-config');
@@ -420,6 +452,8 @@
         await buildBarConfig(card, configEl, previewEl);
       } else if (t === 'scatter') {
         await buildScatterConfig(card, configEl, previewEl);
+      } else if (t === 'line_by_row') {
+        await buildLineByRowConfig(card, configEl, previewEl);
       } else {
         configEl.innerHTML = '';
         previewEl.innerHTML = '';
@@ -602,7 +636,7 @@
     pcaColorSel.innerHTML = '<option value="">None</option>';
     try {
       const meta = await fetchJSON('/api/columns');
-      const cols = meta.columns || [];
+      const cols = (meta.columns || []).filter(c => c.is_simple);
       for (const c of cols) {
         const opt = document.createElement('option');
         opt.value = opt.textContent = c.name;
@@ -773,7 +807,7 @@
     // Populate color-by options
     try {
       const meta = await fetchJSON('/api/columns');
-      const cols = meta.columns || [];
+      const cols = (meta.columns || []).filter(c => c.is_simple);
       for (const c of cols) {
         const opt = document.createElement('option');
         opt.value = opt.textContent = c.name;
@@ -967,7 +1001,7 @@
     // Populate label column choices (all columns)
     try {
       const meta = await fetchJSON('/api/columns');
-      const cols = meta.columns || [];
+      const cols = (meta.columns || []).filter(c => c.is_simple);
       labelSel.innerHTML = '';
       for (const c of cols) {
         const opt = document.createElement('option');
@@ -1076,7 +1110,7 @@
       return;
     }
     const numeric = cols.filter(c => c.is_numeric);
-    const allCols = cols;
+    const simple = cols.filter(c => c.is_simple);
 
     const id = card.dataset.seq;
     const xId = `plot-${id}-x`;
@@ -1172,7 +1206,7 @@
       opt.value = opt.textContent = c.name;
       ySel.appendChild(opt);
     }
-    for (const c of allCols) {
+    for (const c of simple) {
       const opt = document.createElement('option');
       opt.value = opt.textContent = c.name;
       groupSel.appendChild(opt);
@@ -1181,7 +1215,7 @@
     if (numeric.length) xSel.value = numeric[0].name;
     if (numeric.length > 1) ySel.value = numeric[1].name;
     // Prefer 'cell_type' as default group if available
-    const hasCellType = allCols.some(c => c.name === 'cell_type');
+    const hasCellType = simple.some(c => c.name === 'cell_type');
     if (hasCellType) {
       groupSel.value = 'cell_type';
     }
@@ -1372,8 +1406,816 @@
     renderPlot(container, traces, layout, { displayModeBar: false }, 'scatter');
   }
 
+  async function buildLineByRowConfig(card, configEl, previewEl) {
+    let cols;
+    try {
+      const meta = await fetchJSON('/api/columns');
+      cols = meta.columns || [];
+    } catch (e) {
+      configEl.innerHTML = '<div style="color: var(--muted);">No dataset loaded.</div>';
+      previewEl.innerHTML = '';
+      return;
+    }
+    const vectorCols = cols.filter(c => c.is_vector);
+    if (!vectorCols.length) {
+      configEl.innerHTML = '<div style="color: var(--muted);">No 1D numeric vector columns are available.</div>';
+      previewEl.innerHTML = '';
+      return;
+    }
+
+    const id = card.dataset.seq;
+    const xId = `plot-${id}-line-x`;
+    const yId = `plot-${id}-line-y`;
+    const colorId = `plot-${id}-line-color`;
+    const xLabelId = `plot-${id}-line-x-label`;
+    const yLabelId = `plot-${id}-line-y-label`;
+    const legendTitleId = `plot-${id}-line-legend-title`;
+    const xMinId = `plot-${id}-line-xmin`;
+    const xMaxId = `plot-${id}-line-xmax`;
+    const yMinId = `plot-${id}-line-ymin`;
+    const yMaxId = `plot-${id}-line-ymax`;
+    const avgMetricId = `plot-${id}-line-avg-metric`;
+    const avgStyleId = `plot-${id}-line-avg-style`;
+    const invertYId = `plot-${id}-line-invert-y`;
+    const presetNameId = `plot-${id}-line-preset-name`;
+    const presetSelectId = `plot-${id}-line-preset-select`;
+    const presetSaveId = `plot-${id}-line-preset-save`;
+    const presetLoadId = `plot-${id}-line-preset-load`;
+    const presetDeleteId = `plot-${id}-line-preset-delete`;
+    const addFilterId = `plot-${id}-line-add-filter`;
+    const filtersId = `plot-${id}-line-filters`;
+    const colorEditorId = `plot-${id}-line-colors`;
+    const simpleCols = cols.filter(c => c.is_simple);
+    configEl.innerHTML = `
+      <div class="form-row">
+        <span class="field">
+          <label for="${xId}">X variable</label>
+          <select id="${xId}"></select>
+        </span>
+        <span class="field">
+          <label for="${yId}">Y variable</label>
+          <select id="${yId}"></select>
+        </span>
+        <span class="field">
+          <label for="${colorId}">Color by</label>
+          <select id="${colorId}">
+            <option value="">None</option>
+          </select>
+        </span>
+      </div>
+      <div class="form-row" style="margin-top:8px;">
+        <span class="field">
+          <label for="${xLabelId}">X axis label</label>
+          <input id="${xLabelId}" type="text" />
+        </span>
+        <span class="field">
+          <label for="${yLabelId}">Y axis label</label>
+          <input id="${yLabelId}" type="text" />
+        </span>
+        <span class="field">
+          <label for="${legendTitleId}">Legend text</label>
+          <input id="${legendTitleId}" type="text" />
+        </span>
+      </div>
+      <div class="form-row" style="margin-top:8px;">
+        <span class="field">
+          <label for="${xMinId}">X min</label>
+          <input id="${xMinId}" type="number" step="any" placeholder="auto" />
+        </span>
+        <span class="field">
+          <label for="${xMaxId}">X max</label>
+          <input id="${xMaxId}" type="number" step="any" placeholder="auto" />
+        </span>
+        <span class="field">
+          <label for="${yMinId}">Y min</label>
+          <input id="${yMinId}" type="number" step="any" placeholder="auto" />
+        </span>
+        <span class="field">
+          <label for="${yMaxId}">Y max</label>
+          <input id="${yMaxId}" type="number" step="any" placeholder="auto" />
+        </span>
+      </div>
+      <div class="form-row" style="margin-top:8px;">
+        <span class="field">
+          <label for="${avgMetricId}">Average spread</label>
+          <select id="${avgMetricId}">
+            <option value="sem">SEM</option>
+            <option value="sd">SD</option>
+          </select>
+        </span>
+        <span class="field">
+          <label for="${avgStyleId}">Error display</label>
+          <select id="${avgStyleId}">
+            <option value="shaded">Shaded region</option>
+            <option value="bars">Bars</option>
+          </select>
+        </span>
+        <label class="toggle"><input id="${invertYId}" type="checkbox" /> Invert Y values</label>
+      </div>
+      <div class="form-row" style="margin-top:8px; align-items:flex-end;">
+        <span class="field">
+          <label for="${presetNameId}">Preset name</label>
+          <input id="${presetNameId}" type="text" placeholder="Save current settings" />
+        </span>
+        <button type="button" class="secondary" id="${presetSaveId}">Save Preferences</button>
+        <span class="field">
+          <label for="${presetSelectId}">Saved presets</label>
+          <select id="${presetSelectId}">
+            <option value="">Choose preset</option>
+          </select>
+        </span>
+        <button type="button" class="secondary" id="${presetLoadId}">Load</button>
+        <button type="button" class="secondary" id="${presetDeleteId}">Delete</button>
+      </div>
+      <div class="form-row" style="margin-top:8px; align-items:flex-end;">
+        <div id="${filtersId}" style="display:flex; flex-direction:column; gap:8px; flex:1 1 auto;"></div>
+        <button type="button" class="secondary" id="${addFilterId}">Add Filter</button>
+      </div>
+      <div class="form-row" id="${colorEditorId}" style="margin-top:8px; gap:12px; flex-wrap:wrap;"></div>
+    `;
+
+    const xSel = document.getElementById(xId);
+    const ySel = document.getElementById(yId);
+    const colorSel = document.getElementById(colorId);
+    const xLabelInp = document.getElementById(xLabelId);
+    const yLabelInp = document.getElementById(yLabelId);
+    const legendTitleInp = document.getElementById(legendTitleId);
+    const xMinInp = document.getElementById(xMinId);
+    const xMaxInp = document.getElementById(xMaxId);
+    const yMinInp = document.getElementById(yMinId);
+    const yMaxInp = document.getElementById(yMaxId);
+    const avgMetricSel = document.getElementById(avgMetricId);
+    const avgStyleSel = document.getElementById(avgStyleId);
+    const invertYChk = document.getElementById(invertYId);
+    const presetNameInp = document.getElementById(presetNameId);
+    const presetSel = document.getElementById(presetSelectId);
+    const presetSaveBtn = document.getElementById(presetSaveId);
+    const presetLoadBtn = document.getElementById(presetLoadId);
+    const presetDeleteBtn = document.getElementById(presetDeleteId);
+    const filtersEl = document.getElementById(filtersId);
+    const addFilterBtn = document.getElementById(addFilterId);
+    const colorEditorEl = document.getElementById(colorEditorId);
+    for (const c of vectorCols) {
+      const optX = document.createElement('option');
+      optX.value = optX.textContent = c.name;
+      xSel.appendChild(optX);
+      const optY = document.createElement('option');
+      optY.value = optY.textContent = c.name;
+      ySel.appendChild(optY);
+    }
+    for (const c of simpleCols) {
+      const opt = document.createElement('option');
+      opt.value = opt.textContent = c.name;
+      colorSel.appendChild(opt);
+    }
+
+    const preferredX = vectorCols.find(c => c.name === 'spot_sizes');
+    const preferredY = vectorCols.find(c => c.name === 'spikes_stim_mean');
+    xSel.value = preferredX ? preferredX.name : vectorCols[0].name;
+    ySel.value = preferredY ? preferredY.name : (vectorCols.find(c => c.name !== xSel.value)?.name || vectorCols[0].name);
+    if (cols.some(c => c.name === 'cell_type' && c.is_simple)) colorSel.value = 'cell_type';
+
+    let currentData = null;
+    let currentColors = {};
+    let currentLegendLabels = {};
+    let currentLegendAutoLabels = {};
+    let filterSeq = 0;
+    let lastAutoLegend = '';
+
+    async function fetchColumnValues(column) {
+      const data = await fetchJSON(`/api/column_values?column=${encodeURIComponent(column)}`);
+      return Array.isArray(data.values) ? data.values : [];
+    }
+
+    async function fetchPresetList() {
+      const data = await fetchJSON('/api/plot_prefs/line_by_row');
+      return Array.isArray(data.presets) ? data.presets : [];
+    }
+
+    async function fetchPreset(name) {
+      return await fetchJSON(`/api/plot_prefs/line_by_row/${encodeURIComponent(name)}`);
+    }
+
+    async function savePreset(name, preferences) {
+      const target = withDatasetId('/api/plot_prefs/line_by_row');
+      const res = await fetch(target, {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({ name, preferences }),
+      });
+      if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+      return await res.json();
+    }
+
+    async function deletePreset(name) {
+      const target = withDatasetId(`/api/plot_prefs/line_by_row/${encodeURIComponent(name)}`);
+      const res = await fetch(target, {
+        method: 'DELETE',
+        headers: { 'Accept': 'application/json' },
+        credentials: 'same-origin',
+      });
+      if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+      return await res.json();
+    }
+
+    async function refreshPresetOptions(selectedName = '') {
+      const presets = (await fetchPresetList()).sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+      presetSel.innerHTML = '<option value="">Choose preset</option>';
+      for (const preset of presets) {
+        if (!preset || !preset.name) continue;
+        const opt = document.createElement('option');
+        opt.value = preset.name;
+        opt.textContent = preset.name;
+        presetSel.appendChild(opt);
+      }
+      if (selectedName && presets.some(p => p.name === selectedName)) {
+        presetSel.value = selectedName;
+      }
+    }
+
+    async function addFilterRow(defaultMode = 'include', defaultColumn = '', defaultValue = '') {
+      filterSeq += 1;
+      const row = document.createElement('div');
+      row.className = 'form-row';
+      row.dataset.filterSeq = String(filterSeq);
+      row.innerHTML = `
+        <span class="field">
+          <label>Filter</label>
+          <select class="line-filter-op">
+            <option value="include">Select by</option>
+            <option value="exclude">Unselect by</option>
+          </select>
+        </span>
+        <span class="field">
+          <label>Variable</label>
+          <select class="line-filter-col">
+            <option value="">Choose variable</option>
+          </select>
+        </span>
+        <span class="field">
+          <label>Equals</label>
+          <select class="line-filter-val" disabled>
+            <option value="">Choose value</option>
+          </select>
+        </span>
+        <button type="button" class="secondary line-filter-remove">Remove</button>
+      `;
+      filtersEl.appendChild(row);
+      const opSel = row.querySelector('.line-filter-op');
+      const colSel = row.querySelector('.line-filter-col');
+      const valSel = row.querySelector('.line-filter-val');
+      const removeBtn = row.querySelector('.line-filter-remove');
+      for (const c of simpleCols) {
+        const opt = document.createElement('option');
+        opt.value = opt.textContent = c.name;
+        colSel.appendChild(opt);
+      }
+      async function refreshValues(selectedValue = '') {
+        const col = colSel.value;
+        valSel.innerHTML = '<option value="">Choose value</option>';
+        valSel.disabled = !col;
+        if (!col) return;
+        const values = await fetchColumnValues(col);
+        for (const item of values) {
+          const opt = document.createElement('option');
+          opt.value = item.value;
+          opt.textContent = item.label;
+          valSel.appendChild(opt);
+        }
+        if (selectedValue || selectedValue === '') valSel.value = selectedValue;
+      }
+      colSel.addEventListener('change', async () => {
+        await refreshValues('');
+        await refreshPlot(true);
+      });
+      opSel.addEventListener('change', () => refreshPlot(true));
+      valSel.addEventListener('change', () => refreshPlot(true));
+      removeBtn.addEventListener('click', () => {
+        row.remove();
+        refreshPlot(true);
+      });
+      opSel.value = defaultMode === 'exclude' ? 'exclude' : 'include';
+      if (defaultColumn) {
+        colSel.value = defaultColumn;
+        await refreshValues(defaultValue);
+      }
+    }
+
+    async function setFilters(filters) {
+      filtersEl.innerHTML = '';
+      filterSeq = 0;
+      const safeFilters = Array.isArray(filters) ? filters.filter(f => f && typeof f.column === 'string') : [];
+      if (!safeFilters.length) {
+        return;
+      }
+      for (const filter of safeFilters) {
+        await addFilterRow(filter.mode || filter.op || 'include', filter.column || '', filter.value ?? '');
+      }
+    }
+
+    function collectFilters() {
+      const filters = [];
+      for (const row of filtersEl.querySelectorAll('[data-filter-seq]')) {
+        const mode = row.querySelector('.line-filter-op')?.value || 'include';
+        const col = row.querySelector('.line-filter-col')?.value || '';
+        const val = row.querySelector('.line-filter-val')?.value ?? '';
+        if (col && val !== '') filters.push({ mode, column: col, value: val });
+      }
+      return filters;
+    }
+
+    function parseMaybeNumber(value) {
+      const n = parseFloat(value);
+      return Number.isFinite(n) ? n : null;
+    }
+
+    function getRenderOptions() {
+      const opts = {
+        colorMap: currentColors,
+        legendLabelMap: currentLegendLabels,
+        xLabel: (xLabelInp.value || '').trim() || (currentData?.x || xSel.value || ''),
+        yLabel: (yLabelInp.value || '').trim() || (currentData?.y || ySel.value || ''),
+        legendTitle: (legendTitleInp.value || '').trim() || (currentData?.color_column || ''),
+        avgMetric: avgMetricSel.value || 'sem',
+        avgStyle: avgStyleSel.value || 'shaded',
+        invertY: !!invertYChk.checked,
+      };
+      const xMin = parseMaybeNumber(xMinInp.value);
+      const xMax = parseMaybeNumber(xMaxInp.value);
+      const yMin = parseMaybeNumber(yMinInp.value);
+      const yMax = parseMaybeNumber(yMaxInp.value);
+      if (xMin !== null) opts.xMin = xMin;
+      if (xMax !== null) opts.xMax = xMax;
+      if (yMin !== null) opts.yMin = yMin;
+      if (yMax !== null) opts.yMax = yMax;
+      return opts;
+    }
+
+    function getCurrentPreferences() {
+      const savedLegendLabels = {};
+      for (const [key, value] of Object.entries(currentLegendLabels)) {
+        savedLegendLabels[key] = stripCountLabel(value);
+      }
+      const savedColors = { ...currentColors };
+      for (const inp of colorEditorEl.querySelectorAll('input[type="color"][data-color-key]')) {
+        const key = inp.dataset.colorKey || '';
+        if (key) savedColors[key] = inp.value;
+      }
+      return {
+        x: xSel.value || '',
+        y: ySel.value || '',
+        color: colorSel.value || '',
+        xLabel: xLabelInp.value || '',
+        yLabel: yLabelInp.value || '',
+        legendTitle: legendTitleInp.value || '',
+        xMin: xMinInp.value || '',
+        xMax: xMaxInp.value || '',
+        yMin: yMinInp.value || '',
+        yMax: yMaxInp.value || '',
+        avgMetric: avgMetricSel.value || 'sem',
+        avgStyle: avgStyleSel.value || 'shaded',
+        invertY: !!invertYChk.checked,
+        filters: collectFilters(),
+        colorMap: savedColors,
+        legendLabelMap: savedLegendLabels,
+      };
+    }
+
+    function applyTextInputValue(input, value) {
+      input.value = value || '';
+      if (value) input.dataset.userEdited = '1';
+      else delete input.dataset.userEdited;
+    }
+
+    async function applyPreferences(prefs) {
+      if (!prefs || typeof prefs !== 'object') return;
+      if (prefs.x && vectorCols.some(c => c.name === prefs.x)) xSel.value = prefs.x;
+      if (prefs.y && vectorCols.some(c => c.name === prefs.y)) ySel.value = prefs.y;
+      if (typeof prefs.color === 'string' && (!prefs.color || simpleCols.some(c => c.name === prefs.color))) {
+        colorSel.value = prefs.color;
+      }
+      applyTextInputValue(xLabelInp, prefs.xLabel || '');
+      applyTextInputValue(yLabelInp, prefs.yLabel || '');
+      applyTextInputValue(legendTitleInp, prefs.legendTitle || '');
+      xMinInp.value = prefs.xMin || '';
+      xMaxInp.value = prefs.xMax || '';
+      yMinInp.value = prefs.yMin || '';
+      yMaxInp.value = prefs.yMax || '';
+      avgMetricSel.value = prefs.avgMetric === 'sd' ? 'sd' : 'sem';
+      avgStyleSel.value = prefs.avgStyle === 'bars' ? 'bars' : 'shaded';
+      invertYChk.checked = !!prefs.invertY;
+      currentColors = { ...(prefs.colorMap || {}) };
+      currentLegendLabels = { ...(prefs.legendLabelMap || {}) };
+      currentLegendAutoLabels = {};
+      await setFilters(prefs.filters || []);
+      await refreshPlot(false);
+    }
+
+    function rerenderCurrent() {
+      if (!currentData) return;
+      renderLineByRowPlot(previewEl, currentData, getRenderOptions());
+    }
+
+    function refreshColorEditor(data) {
+      colorEditorEl.innerHTML = '';
+      const colorColumn = data && data.color_column ? data.color_column : '';
+      const traces = Array.isArray(data?.traces) ? data.traces : [];
+      const categories = [];
+      if (colorColumn) {
+        for (const row of traces) {
+          const key = row.color_value == null ? 'NA' : String(row.color_value);
+          if (!categories.includes(key)) categories.push(key);
+        }
+      } else {
+        categories.push('All lines');
+      }
+      const palette = ['#60a5fa','#34d399','#f59e0b','#ef4444','#a78bfa','#10b981','#f472b6','#22d3ee','#fb7185','#93c5fd','#fbbf24','#d946ef'];
+      categories.forEach((key, i) => {
+        const rowsForKey = traces.filter(row => (row.color_value == null ? 'NA' : String(row.color_value)) === key);
+        const animalCount = new Set(
+          rowsForKey
+            .map(row => row.animal_value == null ? null : String(row.animal_value))
+            .filter(v => v != null && v !== '')
+        ).size;
+        const autoLegendLabel = formatCountLabel(displayCategoryLabel(key), rowsForKey.length, animalCount > 0 ? animalCount : '?');
+        if (!currentColors[key]) currentColors[key] = palette[i % palette.length];
+        if (!Object.prototype.hasOwnProperty.call(currentLegendLabels, key) || currentLegendLabels[key] === currentLegendAutoLabels[key]) {
+          currentLegendLabels[key] = autoLegendLabel;
+        } else if (stripCountLabel(currentLegendLabels[key]) === currentLegendLabels[key]) {
+          currentLegendLabels[key] = formatCountLabel(currentLegendLabels[key], rowsForKey.length, animalCount > 0 ? animalCount : '?');
+        }
+        currentLegendAutoLabels[key] = autoLegendLabel;
+        const wrap = document.createElement('label');
+        wrap.className = 'field';
+        wrap.style.minWidth = '180px';
+        wrap.innerHTML = `<span style="display:block; margin-bottom:4px;">${displayCategoryLabel(key)}</span>`;
+        const textInp = document.createElement('input');
+        textInp.type = 'text';
+        textInp.value = currentLegendLabels[key];
+        textInp.style.display = 'block';
+        textInp.style.marginBottom = '6px';
+        textInp.addEventListener('input', () => {
+          currentLegendLabels[key] = textInp.value;
+          rerenderCurrent();
+        });
+        const inp = document.createElement('input');
+        inp.type = 'color';
+        inp.value = currentColors[key];
+        inp.dataset.colorKey = key;
+        const handleColorChange = () => {
+          currentColors[key] = inp.value;
+          rerenderCurrent();
+        };
+        inp.addEventListener('input', handleColorChange);
+        inp.addEventListener('change', handleColorChange);
+        wrap.appendChild(textInp);
+        wrap.appendChild(inp);
+        colorEditorEl.appendChild(wrap);
+      });
+    }
+
+    async function refreshPlot(resetColors = false) {
+      const x = xSel.value;
+      const y = ySel.value;
+      const color = colorSel.value;
+      try {
+        const q = new URLSearchParams({ x, y });
+        if (color) q.set('color', color);
+        for (const filter of collectFilters()) {
+          q.append('filter_op', filter.mode);
+          q.append('filter_col', filter.column);
+          q.append('filter_val', filter.value);
+        }
+        const data = await fetchJSON(`/api/plot/line_by_row?${q.toString()}`);
+        const prevAutoLegend = lastAutoLegend;
+        currentData = data;
+        if (resetColors) {
+          currentColors = {};
+          currentLegendLabels = {};
+          currentLegendAutoLabels = {};
+        }
+        if (!xLabelInp.dataset.userEdited || !xLabelInp.value) xLabelInp.value = data.x || '';
+        if (!yLabelInp.dataset.userEdited || !yLabelInp.value) yLabelInp.value = data.y || '';
+        lastAutoLegend = data.color_column || '';
+        if (!legendTitleInp.dataset.userEdited || !legendTitleInp.value || legendTitleInp.value === prevAutoLegend) {
+          legendTitleInp.value = lastAutoLegend;
+        }
+        refreshColorEditor(data);
+        rerenderCurrent();
+      } catch (e) {
+        previewEl.innerHTML = `<div style=\"color: var(--muted);\">${String(e)}</div>`;
+        colorEditorEl.innerHTML = '';
+      }
+    }
+
+    [xLabelInp, yLabelInp, legendTitleInp].forEach((inp) => {
+      inp.addEventListener('input', () => {
+        inp.dataset.userEdited = '1';
+        rerenderCurrent();
+      });
+    });
+    [xMinInp, xMaxInp, yMinInp, yMaxInp, avgMetricSel, avgStyleSel, invertYChk].forEach((el) => {
+      el.addEventListener('input', rerenderCurrent);
+      el.addEventListener('change', rerenderCurrent);
+    });
+    xSel.addEventListener('change', () => refreshPlot(true));
+    ySel.addEventListener('change', () => refreshPlot(true));
+    colorSel.addEventListener('change', () => refreshPlot(true));
+    addFilterBtn.addEventListener('click', async () => { await addFilterRow('include', ''); });
+    presetSaveBtn.addEventListener('click', async () => {
+      const name = (presetNameInp.value || '').trim();
+      if (!name) return;
+      await savePreset(name, getCurrentPreferences());
+      await refreshPresetOptions(name);
+    });
+    presetLoadBtn.addEventListener('click', async () => {
+      const name = presetSel.value;
+      if (!name) return;
+      const preset = await fetchPreset(name);
+      presetNameInp.value = preset.name || name;
+      await applyPreferences(preset.preferences || {});
+    });
+    presetDeleteBtn.addEventListener('click', async () => {
+      const name = presetSel.value;
+      if (!name) return;
+      await deletePreset(name);
+      if ((presetNameInp.value || '').trim() === name) presetNameInp.value = '';
+      await refreshPresetOptions('');
+    });
+    await refreshPresetOptions('');
+    await addFilterRow('include', 'cell_type');
+    await refreshPlot(true);
+  }
+
+  function renderLineByRowPlot(container, data, opts = {}) {
+    const rows = Array.isArray(data.traces) ? data.traces : [];
+    const xLabel = opts.xLabel || data.x || '';
+    const yLabel = opts.yLabel || data.y || '';
+    const invertY = !!opts.invertY;
+    const xUnit = data.x_unit || '';
+    const yUnit = data.y_unit || '';
+    const colorColumn = data.color_column || '';
+    const legendTitle = opts.legendTitle || colorColumn || '';
+    const colorMap = opts.colorMap || {};
+    const legendLabelMap = opts.legendLabelMap || {};
+    const titleX = xUnit ? `${xLabel} (${xUnit})` : xLabel;
+    const titleY = yUnit ? `${yLabel} (${yUnit})` : yLabel;
+    const palette = ['#60a5fa','#34d399','#f59e0b','#ef4444','#a78bfa','#10b981','#f472b6','#22d3ee','#fb7185','#93c5fd','#fbbf24','#d946ef'];
+
+    function clamp(v, lo, hi) {
+      return Math.min(hi, Math.max(lo, v));
+    }
+
+    function hexToRgb(hex) {
+      if (!hex || typeof hex !== 'string') return null;
+      const clean = hex.replace('#', '').trim();
+      if (clean.length !== 6) return null;
+      const num = parseInt(clean, 16);
+      if (!Number.isFinite(num)) return null;
+      return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 };
+    }
+
+    function rgbToHex(r, g, b) {
+      const toHex = (v) => clamp(Math.round(v), 0, 255).toString(16).padStart(2, '0');
+      return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+    }
+
+    function lightenColor(hex, amount = 0.5) {
+      const rgb = hexToRgb(hex);
+      if (!rgb) return hex;
+      return rgbToHex(
+        rgb.r + (255 - rgb.r) * amount,
+        rgb.g + (255 - rgb.g) * amount,
+        rgb.b + (255 - rgb.b) * amount
+      );
+    }
+
+    function computeAverage(rowsForGroup, metric = 'sem') {
+      if (!rowsForGroup.length) return null;
+      function prepareRow(row) {
+        const xs = Array.isArray(row.x) ? row.x : [];
+        const ys = Array.isArray(row.y) ? row.y : [];
+        const pairs = [];
+        for (let j = 0; j < Math.min(xs.length, ys.length); j += 1) {
+          const x = xs[j];
+          const y = ys[j];
+          if (typeof x === 'number' && isFinite(x) && typeof y === 'number' && isFinite(y)) {
+            pairs.push({ x, y });
+          }
+        }
+        pairs.sort((a, b) => a.x - b.x);
+        if (!pairs.length) return { x: [], y: [] };
+        const deduped = [];
+        for (const pair of pairs) {
+          const prev = deduped[deduped.length - 1];
+          if (prev && Math.abs(prev.x - pair.x) < 1e-9) {
+            prev.values.push(pair.y);
+          } else {
+            deduped.push({ x: pair.x, values: [pair.y] });
+          }
+        }
+        return {
+          x: deduped.map(p => p.x),
+          y: deduped.map(p => p.values.reduce((acc, v) => acc + v, 0) / p.values.length),
+        };
+      }
+
+      function interpolateRow(row, xTarget) {
+        const xs = row.x;
+        const ys = row.y;
+        if (!xs.length) return null;
+        if (xTarget < xs[0] || xTarget > xs[xs.length - 1]) return null;
+        for (let j = 0; j < xs.length; j += 1) {
+          if (Math.abs(xs[j] - xTarget) < 1e-9) return ys[j];
+        }
+        for (let j = 0; j < xs.length - 1; j += 1) {
+          const x0 = xs[j];
+          const x1 = xs[j + 1];
+          if (xTarget < x0 || xTarget > x1) continue;
+          if (Math.abs(x1 - x0) < 1e-12) return ys[j];
+          const t = (xTarget - x0) / (x1 - x0);
+          return ys[j] + t * (ys[j + 1] - ys[j]);
+        }
+        return null;
+      }
+
+      const preparedRows = rowsForGroup
+        .map(prepareRow)
+        .filter(row => row.x.length > 0 && row.y.length > 0);
+      if (!preparedRows.length) return null;
+      const unionXMap = new Map();
+      for (const row of preparedRows) {
+        for (const x of row.x) {
+          unionXMap.set(Number(x).toPrecision(12), x);
+        }
+      }
+      const unionXs = Array.from(unionXMap.values()).sort((a, b) => a - b);
+      if (!unionXs.length) return null;
+      const xs = [];
+      const mean = [];
+      const err = [];
+      const counts = [];
+      for (const xTarget of unionXs) {
+        const vals = [];
+        for (const row of preparedRows) {
+          const yInterp = interpolateRow(row, xTarget);
+          if (typeof yInterp === 'number' && isFinite(yInterp)) vals.push(yInterp);
+        }
+        if (!vals.length) continue;
+        const nHere = vals.length;
+        const mu = vals.reduce((acc, v) => acc + v, 0) / nHere;
+        let spread = 0;
+        if (nHere >= 2) {
+          const variance = vals.reduce((acc, v) => acc + ((v - mu) ** 2), 0) / (nHere - 1);
+          const sd = Math.sqrt(Math.max(variance, 0));
+          spread = metric === 'sd' ? sd : sd / Math.sqrt(nHere);
+        }
+        xs.push(xTarget);
+        mean.push(mu);
+        err.push(spread);
+        counts.push(nHere);
+      }
+      return { x: xs, mean, err, n: rowsForGroup.length, counts };
+    }
+
+    const grouped = new Map();
+    const colorIndex = new Map();
+    rows.forEach((row, i) => {
+      const x = Array.isArray(row.x) ? row.x : [];
+      const yBase = Array.isArray(row.y) ? row.y : [];
+      const y = invertY ? yBase.map(v => (typeof v === 'number' && isFinite(v) ? -v : v)) : yBase;
+      const label = row.id || `row ${i + 1}`;
+      const colorKey = colorColumn ? (row.color_value == null ? 'NA' : String(row.color_value)) : 'All lines';
+      const animalValue = row.animal_value == null ? null : String(row.animal_value);
+      if (!colorIndex.has(colorKey)) colorIndex.set(colorKey, colorIndex.size);
+      if (!grouped.has(colorKey)) grouped.set(colorKey, []);
+      grouped.get(colorKey).push({ id: label, x, y, animalValue });
+    });
+
+    const traces = [];
+    const overlayShading = [];
+    const overlayMeans = [];
+    for (const [colorKey, groupRows] of grouped.entries()) {
+      const baseColor = colorMap[colorKey] || palette[colorIndex.get(colorKey) % palette.length];
+      const rowColor = lightenColor(baseColor, 0.55);
+      const baseLegendLabel = displayCategoryLabel(colorKey);
+      const animalCount = new Set(
+        groupRows
+          .map(row => row.animalValue)
+          .filter(v => v != null && v !== '')
+      ).size;
+      const animalText = animalCount > 0 ? animalCount : '?';
+      const autoLegendLabel = `${baseLegendLabel} (n=${groupRows.length} rows, ${animalText} animals)`;
+      const legendDisplayLabel = Object.prototype.hasOwnProperty.call(legendLabelMap, colorKey)
+        ? legendLabelMap[colorKey]
+        : autoLegendLabel;
+      groupRows.forEach((row) => {
+        const text = row.x.map((xv, j) => `${row.id}<br>${xLabel}: ${xv}<br>${yLabel}: ${row.y[j]}`);
+        traces.push({
+          type: 'scattergl',
+          mode: 'lines',
+          name: legendDisplayLabel,
+          legendgroup: colorKey,
+          showlegend: false,
+          x: row.x,
+          y: row.y,
+          text,
+          line: { color: rowColor, width: 1 },
+          opacity: grouped.size > 1 || rows.length > 25 ? 0.5 : 0.7,
+          hovertemplate: '%{text}<extra></extra>',
+        });
+      });
+      const avg = computeAverage(groupRows, opts.avgMetric || 'sem');
+      if (avg && avg.n >= 3) {
+        if (opts.avgStyle === 'shaded') {
+          const upper = avg.mean.map((v, i) => v + avg.err[i]);
+          const lower = avg.mean.map((v, i) => v - avg.err[i]);
+          overlayShading.push({
+            type: 'scatter',
+            mode: 'lines',
+            x: avg.x.concat(avg.x.slice().reverse()),
+            y: upper.concat(lower.slice().reverse()),
+            fill: 'toself',
+            fillcolor: lightenColor(baseColor, 0.75),
+            line: { color: 'rgba(0,0,0,0)', width: 0 },
+            hoverinfo: 'skip',
+            showlegend: false,
+            legendgroup: colorKey,
+          });
+        }
+        overlayMeans.push({
+          type: 'scatter',
+          mode: 'lines',
+          name: legendDisplayLabel,
+          legendgroup: colorKey,
+          showlegend: !!colorColumn,
+          x: avg.x,
+          y: avg.mean,
+          line: { color: baseColor, width: 3 },
+          error_y: {
+            type: 'data',
+            array: avg.err,
+            visible: opts.avgStyle === 'bars',
+            color: baseColor,
+            thickness: 1.5,
+            width: 3,
+          },
+          hovertemplate: `${legendDisplayLabel}<br>${xLabel}: %{x}<br>${yLabel}: %{y}<extra></extra>`,
+        });
+      } else if (colorColumn) {
+        overlayMeans.push({
+          type: 'scatter',
+          mode: 'lines',
+          name: legendDisplayLabel,
+          legendgroup: colorKey,
+          showlegend: true,
+          visible: 'legendonly',
+          x: [0],
+          y: [0],
+          line: { color: baseColor, width: 3 },
+          hoverinfo: 'skip',
+        });
+      }
+    }
+    traces.push(...overlayShading);
+    traces.push(...overlayMeans);
+
+    const width = container.clientWidth || 800;
+    const small = width < 560;
+    const height = small ? 300 : 380;
+    const xaxis = { title: titleX, automargin: true, gridcolor: '#f3f4f6' };
+    const yaxis = { title: titleY, automargin: true, gridcolor: '#e5e7eb' };
+    const allX = rows.flatMap(row => Array.isArray(row.x) ? row.x : []).filter(v => typeof v === 'number' && isFinite(v));
+    const allY = rows.flatMap(row => Array.isArray(row.y) ? row.y : []).filter(v => typeof v === 'number' && isFinite(v));
+    if (typeof opts.xMin === 'number' || typeof opts.xMax === 'number') {
+      const min = typeof opts.xMin === 'number' ? opts.xMin : (allX.length ? Math.min(...allX) : null);
+      const max = typeof opts.xMax === 'number' ? opts.xMax : (allX.length ? Math.max(...allX) : null);
+      if (min !== null && max !== null && max > min) xaxis.range = [min, max];
+    }
+    if (typeof opts.yMin === 'number' || typeof opts.yMax === 'number') {
+      const min = typeof opts.yMin === 'number' ? opts.yMin : (allY.length ? Math.min(...allY) : null);
+      const max = typeof opts.yMax === 'number' ? opts.yMax : (allY.length ? Math.max(...allY) : null);
+      if (min !== null && max !== null && max > min) yaxis.range = [min, max];
+    }
+    const layout = {
+      height,
+      margin: { l: 70, r: 20, t: 10, b: 60 },
+      xaxis,
+      yaxis,
+      plot_bgcolor: '#ffffff',
+      paper_bgcolor: '#ffffff',
+      showlegend: !!colorColumn,
+      legend: colorColumn ? { title: { text: legendTitle || colorColumn } } : undefined,
+    };
+
+    renderPlot(container, traces, layout, { displayModeBar: false }, 'line-by-row');
+  }
+
   async function buildBarConfig(card, configEl, previewEl) {
-    // Get columns and split numeric/all for selections
     let cols;
     try {
       const meta = await fetchJSON('/api/columns');
@@ -1384,17 +2226,41 @@
       return;
     }
     const numeric = cols.filter(c => c.is_numeric);
-    const allCols = cols;
+    const vectorCols = cols.filter(c => c.is_vector || c.is_reducible_vector);
+    const simple = cols.filter(c => c.is_simple);
+    const barValueOptions = [
+      ...numeric.map(c => ({ value: c.name, label: c.name })),
+      ...vectorCols.flatMap(c => ([
+        { value: `${c.name}::mean`, label: `${c.name} (mean)` },
+        { value: `${c.name}::median`, label: `${c.name} (median)` },
+      ])),
+    ];
+    const validBarValueSet = new Set(barValueOptions.map(opt => opt.value));
 
-    // Build selects
     const id = card.dataset.seq;
     const valueId = `plot-${id}-value`;
     const groupId = `plot-${id}-group`;
+    const xLabelId = `plot-${id}-bar-x-label`;
+    const yLabelId = `plot-${id}-bar-y-label`;
     const errId = `plot-${id}-err`;
     const orderId = `plot-${id}-order`;
     const logId = `plot-${id}-log`;
     const yminId = `plot-${id}-ymin`;
     const ymaxId = `plot-${id}-ymax`;
+    const presetNameId = `plot-${id}-bar-preset-name`;
+    const presetSelectId = `plot-${id}-bar-preset-select`;
+    const presetSaveId = `plot-${id}-bar-preset-save`;
+    const presetLoadId = `plot-${id}-bar-preset-load`;
+    const presetDeleteId = `plot-${id}-bar-preset-delete`;
+    const addFilterId = `plot-${id}-bar-add-filter`;
+    const filtersId = `plot-${id}-bar-filters`;
+    const statsControlsId = `plot-${id}-bar-stats`;
+    const testMethodId = `plot-${id}-bar-test-method`;
+    const runTestId = `plot-${id}-bar-run-test`;
+    const showSigId = `plot-${id}-bar-show-sig`;
+    const testResultId = `plot-${id}-bar-test-result`;
+    const colorEditorId = `plot-${id}-bar-colors`;
+    const orderEditorId = `plot-${id}-bar-order-editor`;
     configEl.innerHTML = `
       <div class="form-row">
         <span class="field">
@@ -1404,6 +2270,16 @@
         <span class="field">
           <label for="${groupId}">Group by</label>
           <select id="${groupId}"></select>
+        </span>
+      </div>
+      <div class="form-row" style="margin-top:8px;">
+        <span class="field">
+          <label for="${xLabelId}">X axis label</label>
+          <input id="${xLabelId}" type="text" />
+        </span>
+        <span class="field">
+          <label for="${yLabelId}">Y axis label</label>
+          <input id="${yLabelId}" type="text" />
         </span>
         <span class="field">
           <label for="${errId}">Error bars</label>
@@ -1420,6 +2296,7 @@
             <option value="label_desc">Label (Z→A)</option>
             <option value="value_asc">Value/mean (low→high)</option>
             <option value="value_desc">Value/mean (high→low)</option>
+            <option value="custom">Custom</option>
           </select>
         </span>
         <label class="toggle"><input id="${logId}" type="checkbox" /> Log scale</label>
@@ -1435,83 +2312,652 @@
         </span>
         <button type="button" class="secondary" id="plot-${id}-autoscale">Autoscale</button>
       </div>
+      <div class="form-row" style="margin-top:8px; align-items:flex-end;">
+        <span class="field">
+          <label for="${presetNameId}">Preset name</label>
+          <input id="${presetNameId}" type="text" placeholder="Save current settings" />
+        </span>
+        <button type="button" class="secondary" id="${presetSaveId}">Save Preferences</button>
+        <span class="field">
+          <label for="${presetSelectId}">Saved presets</label>
+          <select id="${presetSelectId}">
+            <option value="">Choose preset</option>
+          </select>
+        </span>
+        <button type="button" class="secondary" id="${presetLoadId}">Load</button>
+        <button type="button" class="secondary" id="${presetDeleteId}">Delete</button>
+      </div>
+      <div class="form-row" style="margin-top:8px; align-items:flex-end;">
+        <div id="${filtersId}" style="display:flex; flex-direction:column; gap:8px; flex:1 1 auto;"></div>
+        <button type="button" class="secondary" id="${addFilterId}">Add Filter</button>
+      </div>
+      <div class="form-row" id="${statsControlsId}" style="margin-top:8px; align-items:flex-end; display:none;">
+        <span class="field">
+          <label for="${testMethodId}">Two-group test</label>
+          <select id="${testMethodId}">
+            <option value="ttest">2-tailed t-test</option>
+            <option value="mannwhitney">Mann-Whitney U</option>
+          </select>
+        </span>
+        <button type="button" class="secondary" id="${runTestId}">Run Test</button>
+        <label class="toggle"><input id="${showSigId}" type="checkbox" /> Show significance line</label>
+        <span id="${testResultId}" style="color: var(--muted);"></span>
+      </div>
+      <div class="form-row" id="${colorEditorId}" style="margin-top:8px; gap:12px; flex-wrap:wrap;"></div>
+      <div class="form-row" id="${orderEditorId}" style="margin-top:8px; gap:8px; flex-wrap:wrap;"></div>
     `;
     const valueSel = document.getElementById(valueId);
     const groupSel = document.getElementById(groupId);
+    const xLabelInp = document.getElementById(xLabelId);
+    const yLabelInp = document.getElementById(yLabelId);
     const errSel = document.getElementById(errId);
     const orderSel = document.getElementById(orderId);
     const logChk = document.getElementById(logId);
     const yminInp = document.getElementById(yminId);
     const ymaxInp = document.getElementById(ymaxId);
+    const presetNameInp = document.getElementById(presetNameId);
+    const presetSel = document.getElementById(presetSelectId);
+    const presetSaveBtn = document.getElementById(presetSaveId);
+    const presetLoadBtn = document.getElementById(presetLoadId);
+    const presetDeleteBtn = document.getElementById(presetDeleteId);
+    const filtersEl = document.getElementById(filtersId);
+    const addFilterBtn = document.getElementById(addFilterId);
+    const statsControlsEl = document.getElementById(statsControlsId);
+    const testMethodSel = document.getElementById(testMethodId);
+    const runTestBtn = document.getElementById(runTestId);
+    const showSigChk = document.getElementById(showSigId);
+    const testResultEl = document.getElementById(testResultId);
+    const colorEditorEl = document.getElementById(colorEditorId);
+    const orderEditorEl = document.getElementById(orderEditorId);
     const autoBtn = document.getElementById(`plot-${id}-autoscale`);
 
-    // Populate options
-    for (const c of allCols) {
+    for (const c of barValueOptions) {
       const opt = document.createElement('option');
-      opt.value = opt.textContent = c.name;
+      opt.value = c.value;
+      opt.textContent = c.label;
       valueSel.appendChild(opt);
     }
-    for (const c of allCols) {
+    for (const c of simple) {
       const opt = document.createElement('option');
       opt.value = opt.textContent = c.name;
       groupSel.appendChild(opt);
     }
 
-    // Choose defaults: first numeric for value, prefer 'cell_type' for group if present, else first non-value column
-    if (numeric.length) valueSel.value = numeric[0].name;
-    if (allCols.length) {
-      const hasCellType = allCols.some(c => c.name === 'cell_type');
+    if (barValueOptions.length) valueSel.value = barValueOptions[0].value;
+    if (simple.length) {
+      const hasCellType = simple.some(c => c.name === 'cell_type');
       if (hasCellType) {
         groupSel.value = 'cell_type';
       } else {
-        groupSel.value = allCols.find(c => c.name !== valueSel.value)?.name || allCols[0].name;
+        const selectedBaseValue = String(valueSel.value || '').replace(/::(mean|median)$/, '');
+        groupSel.value = simple.find(c => c.name !== selectedBaseValue)?.name || simple[0].name;
+      }
+    }
+
+    let currentData = null;
+    let currentColors = {};
+    let currentLabelMap = {};
+    let currentLabelAutoMap = {};
+    let currentCustomOrder = [];
+    let currentTestResult = null;
+    let filterSeq = 0;
+    let lastAutoXLabel = '';
+    let lastAutoYLabel = '';
+
+    async function fetchColumnValues(column) {
+      const data = await fetchJSON(`/api/column_values?column=${encodeURIComponent(column)}`);
+      return Array.isArray(data.values) ? data.values : [];
+    }
+
+    async function fetchPresetList() {
+      const data = await fetchJSON('/api/plot_prefs/bar');
+      return Array.isArray(data.presets) ? data.presets : [];
+    }
+
+    async function fetchPreset(name) {
+      return await fetchJSON(`/api/plot_prefs/bar/${encodeURIComponent(name)}`);
+    }
+
+    async function savePreset(name, preferences) {
+      const target = withDatasetId('/api/plot_prefs/bar');
+      const res = await fetch(target, {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({ name, preferences }),
+      });
+      if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+      return await res.json();
+    }
+
+    async function deletePreset(name) {
+      const target = withDatasetId(`/api/plot_prefs/bar/${encodeURIComponent(name)}`);
+      const res = await fetch(target, {
+        method: 'DELETE',
+        headers: { 'Accept': 'application/json' },
+        credentials: 'same-origin',
+      });
+      if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+      return await res.json();
+    }
+
+    async function refreshPresetOptions(selectedName = '') {
+      const presets = (await fetchPresetList()).sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+      presetSel.innerHTML = '<option value="">Choose preset</option>';
+      for (const preset of presets) {
+        if (!preset || !preset.name) continue;
+        const opt = document.createElement('option');
+        opt.value = preset.name;
+        opt.textContent = preset.name;
+        presetSel.appendChild(opt);
+      }
+      if (selectedName && presets.some(p => p.name === selectedName)) {
+        presetSel.value = selectedName;
+      }
+    }
+
+    async function addFilterRow(defaultMode = 'include', defaultColumn = '', defaultValue = '') {
+      filterSeq += 1;
+      const row = document.createElement('div');
+      row.className = 'form-row';
+      row.dataset.filterSeq = String(filterSeq);
+      row.innerHTML = `
+        <span class="field">
+          <label>Filter</label>
+          <select class="bar-filter-op">
+            <option value="include">Select by</option>
+            <option value="exclude">Unselect by</option>
+          </select>
+        </span>
+        <span class="field">
+          <label>Variable</label>
+          <select class="bar-filter-col">
+            <option value="">Choose variable</option>
+          </select>
+        </span>
+        <span class="field">
+          <label>Equals</label>
+          <select class="bar-filter-val" disabled>
+            <option value="">Choose value</option>
+          </select>
+        </span>
+        <button type="button" class="secondary bar-filter-remove">Remove</button>
+      `;
+      filtersEl.appendChild(row);
+      const opSel = row.querySelector('.bar-filter-op');
+      const colSel = row.querySelector('.bar-filter-col');
+      const valSel = row.querySelector('.bar-filter-val');
+      const removeBtn = row.querySelector('.bar-filter-remove');
+      for (const c of simple) {
+        const opt = document.createElement('option');
+        opt.value = opt.textContent = c.name;
+        colSel.appendChild(opt);
+      }
+      async function refreshValues(selectedValue = '') {
+        const col = colSel.value;
+        valSel.innerHTML = '<option value="">Choose value</option>';
+        valSel.disabled = !col;
+        if (!col) return;
+        const values = await fetchColumnValues(col);
+        for (const item of values) {
+          const opt = document.createElement('option');
+          opt.value = item.value;
+          opt.textContent = item.label;
+          valSel.appendChild(opt);
+        }
+        if (selectedValue || selectedValue === '') valSel.value = selectedValue;
+      }
+      colSel.addEventListener('change', async () => {
+        await refreshValues('');
+        await refreshPlot();
+      });
+      opSel.addEventListener('change', () => refreshPlot());
+      valSel.addEventListener('change', () => refreshPlot());
+      removeBtn.addEventListener('click', () => {
+        row.remove();
+        refreshPlot();
+      });
+      opSel.value = defaultMode === 'exclude' ? 'exclude' : 'include';
+      if (defaultColumn) {
+        colSel.value = defaultColumn;
+        await refreshValues(defaultValue);
+      }
+    }
+
+    async function setFilters(filters) {
+      filtersEl.innerHTML = '';
+      filterSeq = 0;
+      const safeFilters = Array.isArray(filters) ? filters.filter(f => f && typeof f.column === 'string') : [];
+      if (!safeFilters.length) return;
+      for (const filter of safeFilters) {
+        await addFilterRow(filter.mode || filter.op || 'include', filter.column || '', filter.value ?? '');
+      }
+    }
+
+    function collectFilters() {
+      const filters = [];
+      for (const row of filtersEl.querySelectorAll('[data-filter-seq]')) {
+        const mode = row.querySelector('.bar-filter-op')?.value || 'include';
+        const col = row.querySelector('.bar-filter-col')?.value || '';
+        const val = row.querySelector('.bar-filter-val')?.value ?? '';
+        if (col && val !== '') filters.push({ mode, column: col, value: val });
+      }
+      return filters;
+    }
+
+    function parseMaybeNumber(value) {
+      const n = parseFloat(value);
+      return Number.isFinite(n) ? n : null;
+    }
+
+    function getRenderOptions() {
+      const value = valueSel.value;
+      return {
+        err: errSel.value || 'none',
+        order: orderSel.value || 'label_asc',
+        log: !!logChk.checked,
+        xLabel: (xLabelInp.value || '').trim() || (currentData?.group || groupSel.value || ''),
+        yLabel: (yLabelInp.value || '').trim() || (currentData?.value || value || ''),
+        colorMap: currentColors,
+        labelMap: currentLabelMap,
+        customOrder: currentCustomOrder.slice(),
+        testResult: showSigChk.checked ? currentTestResult : null,
+        showSignificanceLine: !!showSigChk.checked,
+        yMin: parseMaybeNumber(yminInp.value),
+        yMax: parseMaybeNumber(ymaxInp.value),
+      };
+    }
+
+    function getCurrentPreferences() {
+      const savedLabelMap = {};
+      for (const [key, value] of Object.entries(currentLabelMap)) {
+        savedLabelMap[key] = stripCountLabel(value);
+      }
+      const savedColors = { ...currentColors };
+      for (const inp of colorEditorEl.querySelectorAll('input[type="color"][data-color-key]')) {
+        const key = inp.dataset.colorKey || '';
+        if (key) savedColors[key] = inp.value;
+      }
+      return {
+        value: valueSel.value || '',
+        group: groupSel.value || '',
+        xLabel: xLabelInp.value || '',
+        yLabel: yLabelInp.value || '',
+        err: errSel.value || 'none',
+        order: orderSel.value || 'label_asc',
+        log: !!logChk.checked,
+        yMin: yminInp.value || '',
+        yMax: ymaxInp.value || '',
+        filters: collectFilters(),
+        colorMap: savedColors,
+        labelMap: savedLabelMap,
+        customOrder: currentCustomOrder.slice(),
+        barTestMethod: testMethodSel.value || 'ttest',
+        showSignificanceLine: !!showSigChk.checked,
+      };
+    }
+
+    function applyTextInputValue(input, value) {
+      input.value = value || '';
+      if (value) input.dataset.userEdited = '1';
+      else delete input.dataset.userEdited;
+    }
+
+    async function applyPreferences(prefs) {
+      if (!prefs || typeof prefs !== 'object') return;
+      if (prefs.value && validBarValueSet.has(prefs.value)) valueSel.value = prefs.value;
+      if (prefs.group && simple.some(c => c.name === prefs.group)) groupSel.value = prefs.group;
+      applyTextInputValue(xLabelInp, prefs.xLabel || '');
+      applyTextInputValue(yLabelInp, prefs.yLabel || '');
+      errSel.value = prefs.err === 'sd' || prefs.err === 'sem' ? prefs.err : 'none';
+      orderSel.value = prefs.order || 'label_asc';
+      logChk.checked = !!prefs.log;
+      yminInp.value = prefs.yMin || '';
+      ymaxInp.value = prefs.yMax || '';
+      currentColors = { ...(prefs.colorMap || {}) };
+      currentLabelMap = { ...(prefs.labelMap || {}) };
+      currentLabelAutoMap = {};
+      currentCustomOrder = Array.isArray(prefs.customOrder) ? prefs.customOrder.map(v => String(v)) : [];
+      testMethodSel.value = prefs.barTestMethod === 'mannwhitney' ? 'mannwhitney' : 'ttest';
+      showSigChk.checked = !!prefs.showSignificanceLine;
+      currentTestResult = null;
+      await setFilters(prefs.filters || []);
+      await refreshPlot();
+    }
+
+    function rerenderCurrent() {
+      if (!currentData) return;
+      renderBarPlot(previewEl, currentData, getRenderOptions());
+    }
+
+    function normalizeCustomOrder(categories) {
+      const incoming = Array.isArray(categories) ? categories.map(v => String(v)) : [];
+      const seen = new Set();
+      const ordered = [];
+      for (const key of currentCustomOrder) {
+        if (incoming.includes(key) && !seen.has(key)) {
+          ordered.push(key);
+          seen.add(key);
+        }
+      }
+      for (const key of incoming) {
+        if (!seen.has(key)) {
+          ordered.push(key);
+          seen.add(key);
+        }
+      }
+      currentCustomOrder = ordered;
+      return ordered;
+    }
+
+    function refreshColorEditor(data) {
+      colorEditorEl.innerHTML = '';
+      const groups = Array.isArray(data?.groups) ? data.groups : [];
+      const categories = groups.map(g => String(g.name ?? ''));
+      const palette = ['#60a5fa','#34d399','#f59e0b','#ef4444','#a78bfa','#10b981','#f472b6','#22d3ee','#fb7185','#93c5fd','#fbbf24','#d946ef'];
+      categories.forEach((key, i) => {
+        const group = groups.find(g => String(g.name ?? '') === key) || {};
+        const rowCount = Number.isFinite(group?.count) ? group.count : 0;
+        const animalCount = Number.isFinite(group?.animal_count) ? group.animal_count : '?';
+        const autoLabel = formatCountLabel(displayCategoryLabel(key), rowCount, animalCount);
+        if (!currentColors[key]) currentColors[key] = palette[i % palette.length];
+        if (!Object.prototype.hasOwnProperty.call(currentLabelMap, key) || currentLabelMap[key] === currentLabelAutoMap[key]) {
+          currentLabelMap[key] = autoLabel;
+        } else if (stripCountLabel(currentLabelMap[key]) === currentLabelMap[key]) {
+          currentLabelMap[key] = formatCountLabel(currentLabelMap[key], rowCount, animalCount);
+        }
+        currentLabelAutoMap[key] = autoLabel;
+        const wrap = document.createElement('label');
+        wrap.className = 'field';
+        wrap.style.minWidth = '180px';
+        wrap.innerHTML = `<span style="display:block; margin-bottom:4px;">${displayCategoryLabel(key)}</span>`;
+        const textInp = document.createElement('input');
+        textInp.type = 'text';
+        textInp.value = currentLabelMap[key];
+        textInp.style.display = 'block';
+        textInp.style.marginBottom = '6px';
+        textInp.addEventListener('input', () => {
+          currentLabelMap[key] = textInp.value;
+          rerenderCurrent();
+        });
+        const inp = document.createElement('input');
+        inp.type = 'color';
+        inp.value = currentColors[key];
+        inp.dataset.colorKey = key;
+        const handleColorChange = () => {
+          currentColors[key] = inp.value;
+          rerenderCurrent();
+        };
+        inp.addEventListener('input', handleColorChange);
+        inp.addEventListener('change', handleColorChange);
+        wrap.appendChild(textInp);
+        wrap.appendChild(inp);
+        colorEditorEl.appendChild(wrap);
+      });
+    }
+
+    function refreshOrderEditor(data) {
+      orderEditorEl.innerHTML = '';
+      const groups = Array.isArray(data?.groups) ? data.groups : [];
+      const categories = normalizeCustomOrder(groups.map(g => String(g.name ?? '')));
+      if (!categories.length) return;
+      categories.forEach((key, index) => {
+        const wrap = document.createElement('div');
+        wrap.className = 'field';
+        wrap.style.minWidth = '220px';
+        wrap.style.display = 'flex';
+        wrap.style.alignItems = 'center';
+        wrap.style.gap = '6px';
+        const label = document.createElement('span');
+        label.style.flex = '1 1 auto';
+        label.textContent = currentLabelMap[key] || displayCategoryLabel(key);
+        const upBtn = document.createElement('button');
+        upBtn.type = 'button';
+        upBtn.className = 'secondary';
+        upBtn.textContent = 'Up';
+        upBtn.disabled = index === 0;
+        upBtn.addEventListener('click', () => {
+          if (index === 0) return;
+          const next = currentCustomOrder.slice();
+          [next[index - 1], next[index]] = [next[index], next[index - 1]];
+          currentCustomOrder = next;
+          orderSel.value = 'custom';
+          refreshOrderEditor(currentData);
+          rerenderCurrent();
+        });
+        const downBtn = document.createElement('button');
+        downBtn.type = 'button';
+        downBtn.className = 'secondary';
+        downBtn.textContent = 'Down';
+        downBtn.disabled = index === categories.length - 1;
+        downBtn.addEventListener('click', () => {
+          if (index === categories.length - 1) return;
+          const next = currentCustomOrder.slice();
+          [next[index], next[index + 1]] = [next[index + 1], next[index]];
+          currentCustomOrder = next;
+          orderSel.value = 'custom';
+          refreshOrderEditor(currentData);
+          rerenderCurrent();
+        });
+        wrap.appendChild(label);
+        wrap.appendChild(upBtn);
+        wrap.appendChild(downBtn);
+        orderEditorEl.appendChild(wrap);
+      });
+    }
+
+    async function runCurrentTest() {
+      if (!currentData || !Array.isArray(currentData.groups) || currentData.groups.length !== 2) {
+        currentTestResult = null;
+        testResultEl.textContent = '';
+        rerenderCurrent();
+        return;
+      }
+      const q = new URLSearchParams({
+        value: valueSel.value,
+        group: groupSel.value,
+        method: testMethodSel.value || 'ttest',
+      });
+      for (const filter of collectFilters()) {
+        q.append('filter_op', filter.mode);
+        q.append('filter_col', filter.column);
+        q.append('filter_val', filter.value);
+      }
+      try {
+        const result = await fetchJSON(`/api/plot/bar_test?${q.toString()}`);
+        currentTestResult = result;
+        const pText = formatPValueThreshold(result?.p_value);
+        testResultEl.textContent = `${result.summary}: ${pText}`;
+        rerenderCurrent();
+      } catch (e) {
+        currentTestResult = null;
+        testResultEl.textContent = String(e);
+        rerenderCurrent();
+      }
+    }
+
+    function refreshStatsControls(data) {
+      const groups = Array.isArray(data?.groups) ? data.groups : [];
+      const visible = groups.length === 2;
+      statsControlsEl.style.display = visible ? '' : 'none';
+      runTestBtn.disabled = !visible;
+      showSigChk.disabled = !visible;
+      if (!visible) {
+        currentTestResult = null;
+        testResultEl.textContent = '';
       }
     }
 
     async function refreshPlot() {
       const value = valueSel.value;
       const group = groupSel.value;
-      const err = errSel.value; // none|sd|sem
-      const order = orderSel.value; // label_asc|label_desc|value_asc|value_desc
-      const log = !!logChk.checked;
-      const yMin = parseFloat(yminInp.value);
-      const yMax = parseFloat(ymaxInp.value);
       try {
-        const data = await fetchJSON(`/api/plot/bar?value=${encodeURIComponent(value)}&group=${encodeURIComponent(group)}`);
-        const opts = { err, log, order };
-        if (!Number.isNaN(yMin)) opts.yMin = yMin;
-        if (!Number.isNaN(yMax)) opts.yMax = yMax;
-        renderBarPlot(previewEl, data, opts);
+        const q = new URLSearchParams({ value, group });
+        for (const filter of collectFilters()) {
+          q.append('filter_op', filter.mode);
+          q.append('filter_col', filter.column);
+          q.append('filter_val', filter.value);
+        }
+        const data = await fetchJSON(`/api/plot/bar?${q.toString()}`);
+        const prevAutoXLabel = lastAutoXLabel;
+        const prevAutoYLabel = lastAutoYLabel;
+        currentData = data;
+        lastAutoXLabel = data.group || '';
+        lastAutoYLabel = data.value || '';
+        if (!xLabelInp.dataset.userEdited || !xLabelInp.value || xLabelInp.value === prevAutoXLabel) {
+          xLabelInp.value = lastAutoXLabel;
+        }
+        if (!yLabelInp.dataset.userEdited || !yLabelInp.value || yLabelInp.value === prevAutoYLabel) {
+          yLabelInp.value = lastAutoYLabel;
+        }
+        refreshStatsControls(data);
+        refreshColorEditor(data);
+        refreshOrderEditor(data);
+        if (Array.isArray(data.groups) && data.groups.length === 2 && (showSigChk.checked || currentTestResult)) {
+          await runCurrentTest();
+          return;
+        }
+        rerenderCurrent();
       } catch (e) {
         previewEl.innerHTML = `<div style=\"color: var(--muted);\">${String(e)}</div>`;
+        statsControlsEl.style.display = 'none';
+        testResultEl.textContent = '';
+        colorEditorEl.innerHTML = '';
+        orderEditorEl.innerHTML = '';
       }
     }
 
+    [xLabelInp, yLabelInp].forEach((inp) => {
+      inp.addEventListener('input', () => {
+        inp.dataset.userEdited = '1';
+        rerenderCurrent();
+      });
+    });
+    [errSel, orderSel, logChk, yminInp, ymaxInp].forEach((el) => {
+      el.addEventListener('input', rerenderCurrent);
+      el.addEventListener('change', rerenderCurrent);
+    });
     valueSel.addEventListener('change', refreshPlot);
     groupSel.addEventListener('change', refreshPlot);
-    errSel.addEventListener('change', refreshPlot);
-    orderSel.addEventListener('change', refreshPlot);
-    logChk.addEventListener('change', refreshPlot);
-    yminInp.addEventListener('change', refreshPlot);
-    ymaxInp.addEventListener('change', refreshPlot);
-    autoBtn.addEventListener('click', () => { yminInp.value = ''; ymaxInp.value = ''; refreshPlot(); });
+    addFilterBtn.addEventListener('click', async () => { await addFilterRow('include', ''); });
+    testMethodSel.addEventListener('change', () => {
+      currentTestResult = null;
+      testResultEl.textContent = '';
+      if (showSigChk.checked && currentData && Array.isArray(currentData.groups) && currentData.groups.length === 2) {
+        void runCurrentTest();
+      } else {
+        rerenderCurrent();
+      }
+    });
+    runTestBtn.addEventListener('click', () => { void runCurrentTest(); });
+    showSigChk.addEventListener('change', () => {
+      if (showSigChk.checked && !currentTestResult && currentData && Array.isArray(currentData.groups) && currentData.groups.length === 2) {
+        void runCurrentTest();
+      } else {
+        rerenderCurrent();
+      }
+    });
+    autoBtn.addEventListener('click', () => {
+      yminInp.value = '';
+      ymaxInp.value = '';
+      rerenderCurrent();
+    });
+    presetSaveBtn.addEventListener('click', async () => {
+      const name = (presetNameInp.value || '').trim();
+      if (!name) return;
+      await savePreset(name, getCurrentPreferences());
+      await refreshPresetOptions(name);
+    });
+    presetLoadBtn.addEventListener('click', async () => {
+      const name = presetSel.value;
+      if (!name) return;
+      const preset = await fetchPreset(name);
+      presetNameInp.value = preset.name || name;
+      await applyPreferences(preset.preferences || {});
+    });
+    presetDeleteBtn.addEventListener('click', async () => {
+      const name = presetSel.value;
+      if (!name) return;
+      await deletePreset(name);
+      if ((presetNameInp.value || '').trim() === name) presetNameInp.value = '';
+      await refreshPresetOptions('');
+    });
+    await refreshPresetOptions('');
+    await addFilterRow('include', 'cell_type');
     await refreshPlot();
   }
 
   function renderBarPlot(container, data, opts = { err: 'none', log: false, order: 'label_asc' }) {
     const groups = Array.isArray(data.groups) ? data.groups : [];
     const unit = data.unit || '';
-    const label = data.value || '';
+    const valueName = data.value || '';
     const groupName = data.group || '';
     const groupUnit = data.group_unit || '';
+    const yBaseLabel = opts.yLabel || valueName || '';
+    const xBaseLabel = opts.xLabel || groupName || '';
+    const labelMap = opts.labelMap || {};
+    const colorMap = opts.colorMap || {};
+    const customOrder = Array.isArray(opts.customOrder) ? opts.customOrder.map(v => String(v)) : [];
+    const testResult = opts.testResult || null;
+    const showSignificanceLine = !!opts.showSignificanceLine;
+    const palette = ['#60a5fa','#34d399','#f59e0b','#ef4444','#a78bfa','#10b981','#f472b6','#22d3ee','#fb7185','#93c5fd','#fbbf24','#d946ef'];
 
-    // Determine ordering of groups for plotting
+    function clamp(v, lo, hi) {
+      return Math.min(hi, Math.max(lo, v));
+    }
+
+    function hexToRgb(hex) {
+      if (!hex || typeof hex !== 'string') return null;
+      const clean = hex.replace('#', '').trim();
+      if (clean.length !== 6) return null;
+      const num = parseInt(clean, 16);
+      if (!Number.isFinite(num)) return null;
+      return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 };
+    }
+
+    function rgbToHex(r, g, b) {
+      const toHex = (v) => clamp(Math.round(v), 0, 255).toString(16).padStart(2, '0');
+      return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+    }
+
+    function lightenColor(hex, amount = 0.4) {
+      const rgb = hexToRgb(hex);
+      if (!rgb) return hex;
+      return rgbToHex(
+        rgb.r + (255 - rgb.r) * amount,
+        rgb.g + (255 - rgb.g) * amount,
+        rgb.b + (255 - rgb.b) * amount
+      );
+    }
+
     const n = groups.length;
     const indices = Array.from({ length: n }, (_, i) => i);
     const rawMeans = groups.map(g => (typeof g.mean === 'number' && isFinite(g.mean)) ? g.mean : null);
-    const names = groups.map(g => String(g.name));
+    const names = groups.map(g => String(g.name ?? ''));
+    const counts = groups.map(g => Number.isFinite(g?.count) ? g.count : 0);
+    const animalCounts = groups.map(g => Number.isFinite(g?.animal_count) ? g.animal_count : null);
+    const autoLabels = names.map((name, i) => {
+      const animalText = animalCounts[i] == null ? '?' : animalCounts[i];
+      return `${displayCategoryLabel(name)} (n=${counts[i]} rows, ${animalText} animals)`;
+    });
+    const displayLabels = names.map((name, i) => {
+      if (Object.prototype.hasOwnProperty.call(labelMap, name)) return labelMap[name];
+      const animalText = animalCounts[i] == null ? '?' : animalCounts[i];
+      return autoLabels[i];
+    });
+    const groupColors = names.map((name, i) => colorMap[name] || palette[i % palette.length]);
     const orderMode = opts.order || 'label_asc';
+    const customPos = new Map(customOrder.map((name, i) => [name, i]));
     const cmp = (a, b) => {
+      if (orderMode === 'custom') {
+        const pa = customPos.has(names[a]) ? customPos.get(names[a]) : Number.MAX_SAFE_INTEGER;
+        const pb = customPos.has(names[b]) ? customPos.get(names[b]) : Number.MAX_SAFE_INTEGER;
+        if (pa !== pb) return pa - pb;
+        return a - b;
+      }
       if (orderMode === 'value_asc' || orderMode === 'value_desc') {
         const va = rawMeans[a];
         const vb = rawMeans[b];
@@ -1530,8 +2976,9 @@
     };
     indices.sort(cmp);
     const posByOrig = new Map(indices.map((origIdx, pos) => [origIdx, pos]));
-    const xlabels = indices.map(i => names[i]);
+    const xlabels = indices.map(i => displayLabels[i]);
     const xpos = indices.map((_, i) => i);
+    const barColors = indices.map(i => groupColors[i]);
 
     const meansOrderedRaw = indices.map(i => rawMeans[i]);
     const means = meansOrderedRaw.map(m => (opts.log && !(m > 0) ? null : m));
@@ -1552,7 +2999,8 @@
       type: 'bar',
       x: xpos,
       y: means,
-      marker: { color: '#60a5fa' },
+      marker: { color: barColors, opacity: 0.45 },
+      customdata: indices.map(i => xlabels[posByOrig.get(i) ?? i]),
       error_y: {
         type: 'data',
         array: errArray,
@@ -1561,12 +3009,13 @@
         thickness: 1.5,
         width: 4,
       },
-      hovertemplate: '%{y}<extra>%{x}</extra>',
+      hovertemplate: `${yBaseLabel}: %{y}<extra>%{customdata}</extra>`,
     };
 
     const pointX = [];
     const pointY = [];
     const pointText = [];
+    const pointColor = [];
     const jitter = 0.25;
     groups.forEach((g, i) => {
       const pts = Array.isArray(g.points) && g.points.length
@@ -1580,7 +3029,9 @@
         pointX.push(newPos + (Math.random() - 0.5) * 2 * jitter);
         pointY.push(v);
         const id = (p.id ?? '').toString();
-        pointText.push(id ? `${id}, ${v}` : `${v}`);
+        const displayName = xlabels[newPos] || displayLabels[i] || names[i];
+        pointText.push(id ? `${displayName}<br>${id}: ${v}` : `${displayName}<br>${v}`);
+        pointColor.push(lightenColor(groupColors[i], 0.15));
       });
     });
     const pointsTrace = {
@@ -1589,19 +3040,18 @@
       x: pointX,
       y: pointY,
       text: pointText,
-      marker: { color: '#111827', opacity: 0.5, size: 5 },
+      marker: { color: pointColor, opacity: 0.7, size: 5 },
       hovertemplate: '%{text}<extra></extra>',
       showlegend: false,
     };
 
-    // Compute data extents for optional manual limits
     const allValues = groups.flatMap(g => (g.values || [])).filter(v => typeof v === 'number' && isFinite(v));
     const numericMeans = rawMeans.filter(v => typeof v === 'number' && isFinite(v));
     const linMin = (allValues.concat(numericMeans).length ? Math.min(...allValues, ...numericMeans) : 0);
     const linMax = (allValues.concat(numericMeans).length ? Math.max(...allValues, ...numericMeans) : 1);
     const posValues = allValues.filter(v => v > 0).concat(numericMeans.filter(v => v > 0));
 
-    const yTitle = unit ? `${label}<br>(${unit})` : label;
+    const yTitle = unit ? `${yBaseLabel}<br>(${unit})` : yBaseLabel;
     const yaxis = {
       title: { text: yTitle, standoff: 8 },
       type: opts.log ? 'log' : 'linear',
@@ -1611,7 +3061,6 @@
       zerolinecolor: '#9ca3af',
     };
     if (!opts.log) {
-      // Linear scale: allow partial manual limits (min-only or max-only)
       const hasMin = typeof opts.yMin === 'number' && isFinite(opts.yMin);
       const hasMax = typeof opts.yMax === 'number' && isFinite(opts.yMax);
       if (hasMin || hasMax) {
@@ -1623,7 +3072,6 @@
         }
       }
     } else {
-      // Log scale: choose a nonzero default Y-min (decade below/at data min)
       let yMinP;
       let yMaxP;
       const hasMin = typeof opts.yMin === 'number' && isFinite(opts.yMin) && opts.yMin > 0;
@@ -1634,7 +3082,6 @@
       if (posValues.length) {
         const dataMin = Math.min(...posValues);
         const dataMax = Math.max(...posValues);
-        // Default to decade-rounded bounds when not provided
         if (!hasMin) yMinP = Math.pow(10, Math.floor(Math.log10(dataMin)));
         if (!hasMax) yMaxP = Math.pow(10, Math.ceil(Math.log10(dataMax)));
       }
@@ -1659,7 +3106,6 @@
       }
     }
 
-    // Responsive layout tweaks based on container width and crowding
     const width = container.clientWidth || 800;
     const crowded = xlabels.length > 10;
     const small = width < 560;
@@ -1671,9 +3117,9 @@
 
     const layout = {
       height,
-      margin: { l: leftMargin, r: 20, t: 10, b: bottomMargin },
+      margin: { l: leftMargin, r: 20, t: showSignificanceLine ? 52 : 10, b: bottomMargin },
       xaxis: {
-        title: groupUnit ? `${groupName} (${groupUnit})` : groupName,
+        title: groupUnit ? `${xBaseLabel} (${groupUnit})` : xBaseLabel,
         tickmode: 'array',
         tickvals: xpos,
         ticktext: xlabels,
@@ -1686,6 +3132,18 @@
       paper_bgcolor: '#ffffff',
       showlegend: false,
     };
+
+    if (showSignificanceLine && testResult && groups.length === 2) {
+      const pText = formatPValueThreshold(testResult.p_value);
+      layout.shapes = [
+        { type: 'line', xref: 'x', yref: 'paper', x0: 0, x1: 0, y0: 1.01, y1: 1.045, line: { color: '#111827', width: 1.5 } },
+        { type: 'line', xref: 'x', yref: 'paper', x0: 0, x1: 1, y0: 1.045, y1: 1.045, line: { color: '#111827', width: 1.5 } },
+        { type: 'line', xref: 'x', yref: 'paper', x0: 1, x1: 1, y0: 1.01, y1: 1.045, line: { color: '#111827', width: 1.5 } },
+      ];
+      layout.annotations = [
+        { x: 0.5, y: 1.06, xref: 'x', yref: 'paper', text: pText, showarrow: false, yanchor: 'bottom', font: { color: '#111827' }, bgcolor: '#ffffff' },
+      ];
+    }
 
     renderPlot(container, [barTrace, pointsTrace], layout, { displayModeBar: false }, 'bar');
   }

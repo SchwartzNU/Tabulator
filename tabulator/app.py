@@ -4,7 +4,7 @@ from asgiref.wsgi import WsgiToAsgi
 from .config import BaseConfig, LocalDevConfig, ProductionConfig
 
 
-def create_app() -> Flask:
+def create_flask_app() -> Flask:
     app = Flask(
         __name__,
         static_folder="static",
@@ -18,10 +18,18 @@ def create_app() -> Flask:
 
     # Ensure upload directory exists
     os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
+    os.makedirs(app.instance_path, exist_ok=True)
 
     # Register blueprints
     from .routes import bp as main_bp
 
     app.register_blueprint(main_bp)
-    app = WsgiToAsgi(app)
     return app
+
+
+def create_asgi_app():
+    return WsgiToAsgi(create_flask_app())
+
+
+def create_app() -> Flask:
+    return create_flask_app()

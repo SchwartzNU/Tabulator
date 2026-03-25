@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 import pandas as pd
 from scipy.io import loadmat
+from scipy.io.matlab import MatlabOpaque
 import h5py
 
 
@@ -41,10 +42,54 @@ def _load_csv_formatted(path: str) -> DataSet:
     try:
         raw = pd.read_csv(path, header=None)
         if raw.shape[0] < 2:
-            raise LoadError("CSV must have at least two rows (header + units)")
+            raise LoadError("CSV must have at least two rows (header + data/units)")
         header = raw.iloc[0].astype(str).tolist()
-        units_row = raw.iloc[1].astype(str).fillna("").tolist()
-        df = raw.iloc[2:].reset_index(drop=True)
+        second_row = raw.iloc[1].tolist()
+
+        def _cell_is_numeric_like(value: Any) -> bool:
+            if value is None:
+                return False
+            try:
+                if pd.isna(value):
+                    return False
+            except Exception:
+                pass
+            if isinstance(value, (int, float, np.integer, np.floating)):
+                return True
+            text = str(value).strip()
+            if not text:
+                return False
+            try:
+                parsed = pd.to_numeric(text)
+            except Exception:
+                return False
+            try:
+                return not pd.isna(parsed)
+            except Exception:
+                return True
+
+        def _second_row_is_units(row: list[Any]) -> bool:
+            saw_text = False
+            for value in row:
+                if value is None:
+                    continue
+                try:
+                    if pd.isna(value):
+                        continue
+                except Exception:
+                    pass
+                text = str(value).strip()
+                if not text:
+                    continue
+                if _cell_is_numeric_like(value):
+                    return False
+                saw_text = True
+            return saw_text
+
+        has_units_row = _second_row_is_units(second_row)
+        units_row = [("" if pd.isna(v) else str(v)) for v in second_row] if has_units_row else ["" for _ in header]
+        data_start = 2 if has_units_row else 1
+        df = raw.iloc[data_start:].reset_index(drop=True)
         df.columns = header
         # Convert only columns that are fully numeric-like
         df = _infer_and_cast_columns(df)
@@ -159,16 +204,19 @@ def _load_mat_formatted(path: str) -> DataSet:
     struct_key = next((k for k in struct_keys if k in data), None)
     units_key = next((k for k in units_keys if k in data), None)
 
-    if struct_key is None or units_key is None:
-        raise LoadError(
-            "MAT file must contain struct 'data' (or legacy 'S') and units 'unitsStruct' (or legacy 'Units')"
-        )
+    if struct_key is None:
+        opaque_name = _find_mat_opaque_table_name(data)
+        if opaque_name:
+            raise LoadError(
+                f"MATLAB table '{opaque_name}' is not supported by SciPy MAT parsing. "
+                "Save it as a struct array first."
+            )
+        raise LoadError("MAT file must contain struct 'data' (or legacy 'S').")
 
     S = data[struct_key]
-    Units = data[units_key]
 
-    # Convert Units struct to dict
-    units: Dict[str, str] = _mat_units_to_dict(Units)
+    # Units are optional for MAT imports.
+    units: Dict[str, str] = _mat_units_to_dict(data[units_key]) if units_key is not None else {}
 
     # Convert struct array S to DataFrame
     rows = _mat_struct_array_to_rows(S)
@@ -181,6 +229,30 @@ def _load_mat_formatted(path: str) -> DataSet:
     if "segmentID" in df.columns and "segmentID" not in units:
         units["segmentID"] = ""
     return DataSet(df=df, units=units)
+
+
+def _find_mat_opaque_table_name(data: Dict[str, Any]) -> Optional[str]:
+    for key, value in data.items():
+        if key.startswith("__") or not isinstance(value, MatlabOpaque) or value.size == 0:
+            continue
+        try:
+            elem = value.reshape(-1)[0]
+            kind = elem["s2"]
+            if isinstance(kind, np.ndarray) and kind.size == 1:
+                kind = kind.reshape(()).tolist()
+            if isinstance(kind, (bytes, bytearray)):
+                kind = kind.decode("utf-8", errors="ignore")
+            if str(kind) != "table":
+                continue
+            name = elem["s0"]
+            if isinstance(name, np.ndarray) and name.size == 1:
+                name = name.reshape(()).tolist()
+            if isinstance(name, (bytes, bytearray)):
+                name = name.decode("utf-8", errors="ignore")
+            return str(name) if name else key
+        except Exception:
+            continue
+    return None
 
 
 def _mat_units_to_dict(Units: Any) -> Dict[str, str]:
@@ -240,40 +312,52 @@ def _mat_struct_array_to_rows(S: Any) -> list[Dict[str, Any]]:
             row: Dict[str, Any] = {}
             if hasattr(elem, "_fieldnames"):
                 for name in elem._fieldnames:
-                    v = getattr(elem, name)
-                    # Coerce scalars and 1x1 arrays
-                    if isinstance(v, np.ndarray) and v.size == 1:
-                        v = v.reshape(())
-                        v = v.tolist() if isinstance(v, np.ndarray) else v
-                    # Join MATLAB char arrays into Python strings
-                    if isinstance(v, np.ndarray) and v.dtype.kind in {"S", "U"}:
-                        try:
-                            v = "".join(v.astype(str).tolist())
-                        except Exception:
-                            v = v.astype(str)
-                    # Decode bytes
-                    if isinstance(v, (bytes, bytearray)):
-                        v = v.decode("utf-8", errors="ignore")
-                    row[str(name)] = v
+                    row[str(name)] = _mat_normalize_value(getattr(elem, name))
             rows.append(row)
     elif hasattr(S, "_fieldnames"):
-        # Single MATLAB struct -> one row
-        row: Dict[str, Any] = {}
-        for name in S._fieldnames:
-            v = getattr(S, name)
-            if isinstance(v, np.ndarray) and v.size == 1:
-                v = v.reshape(())
-                v = v.tolist() if isinstance(v, np.ndarray) else v
-            if isinstance(v, np.ndarray) and v.dtype.kind in {"S", "U"}:
-                try:
-                    v = "".join(v.astype(str).tolist())
-                except Exception:
-                    v = v.astype(str)
-            if isinstance(v, (bytes, bytearray)):
-                v = v.decode("utf-8", errors="ignore")
-            row[str(name)] = v
-        rows.append(row)
+        rows = _mat_scalar_struct_to_rows(S)
     return rows
+
+
+def _mat_scalar_struct_to_rows(S: Any) -> list[Dict[str, Any]]:
+    field_values = {str(name): getattr(S, name) for name in S._fieldnames}
+    lengths = []
+    for value in field_values.values():
+        if isinstance(value, np.ndarray) and value.ndim > 0:
+            lengths.append(len(value))
+    if lengths and all(length == lengths[0] for length in lengths) and lengths[0] > 1:
+        row_count = lengths[0]
+        rows: list[Dict[str, Any]] = []
+        for idx in range(row_count):
+            row: Dict[str, Any] = {}
+            for name, value in field_values.items():
+                if isinstance(value, np.ndarray) and value.ndim > 0 and len(value) == row_count:
+                    row[name] = _mat_normalize_value(value[idx])
+                else:
+                    row[name] = _mat_normalize_value(value)
+            rows.append(row)
+        return rows
+
+    row: Dict[str, Any] = {}
+    for name, value in field_values.items():
+        row[name] = _mat_normalize_value(value)
+    return [row]
+
+
+def _mat_normalize_value(v: Any) -> Any:
+    if isinstance(v, np.ndarray) and v.size == 0 and v.dtype.kind in {"S", "U"}:
+        return ""
+    if isinstance(v, np.ndarray) and v.size == 1:
+        v = v.reshape(())
+        v = v.tolist() if isinstance(v, np.ndarray) else v
+    if isinstance(v, np.ndarray) and v.dtype.kind in {"S", "U"}:
+        try:
+            v = "".join(v.astype(str).tolist())
+        except Exception:
+            v = v.astype(str)
+    if isinstance(v, (bytes, bytearray)):
+        v = v.decode("utf-8", errors="ignore")
+    return v
 
 
 def _infer_and_cast_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -295,6 +379,8 @@ def _infer_and_cast_columns(df: pd.DataFrame) -> pd.DataFrame:
 
         # Treat empty/whitespace-only strings as missing for inference
         def is_present(v: Any) -> bool:
+            if isinstance(v, (np.ndarray, list, tuple, dict)):
+                return True
             if pd.isna(v):
                 return False
             if isinstance(v, str):

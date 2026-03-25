@@ -1,0 +1,183 @@
+{
+  "presets": [
+    {
+      "dataset_label": "T_SMS_CA_FULL.mat",
+      "dataset_source": "upload",
+      "name": "HFD_SMS_CA",
+      "preferences": {
+        "avgMetric": "sem",
+        "avgStyle": "shaded",
+        "color": "feeding_condition",
+        "colorMap": {
+          "": "#60a5fa",
+          "HFD": "#f59e0b",
+          "chow": "#34d399"
+        },
+        "filters": [
+          {
+            "column": "cell_type",
+            "value": "ON alpha"
+          },
+          {
+            "column": "retina_quadrant",
+            "value": "DT"
+          }
+        ],
+        "legendLabelMap": {
+          "": "Control",
+          "HFD": "HFD",
+          "chow": "Sibling control"
+        },
+        "legendTitle": "Feeding condition",
+        "x": "spot_sizes",
+        "xLabel": "Spot size (\u00b5m)",
+        "xMax": "1200",
+        "xMin": "",
+        "y": "spikes_stim_mean",
+        "yLabel": "Spikes",
+        "yMax": "",
+        "yMin": ""
+      },
+      "scope_key": "upload::T_SMS_CA_FULL.mat"
+    },
+    {
+      "dataset_label": "SMS_VC_full.mat",
+      "dataset_source": "upload",
+      "name": "SMS_charge",
+      "plot_type": "line_by_row",
+      "preferences": {
+        "avgMetric": "sem",
+        "avgStyle": "shaded",
+        "color": "feeding_condition",
+        "colorMap": {
+          "": "#000000",
+          "HFD": "#34d399"
+        },
+        "filters": [
+          {
+            "column": "cell_type",
+            "value": "ON alpha"
+          },
+          {
+            "column": "holding_voltage",
+            "value": "-60"
+          },
+          {
+            "column": "retina_quadrant",
+            "value": "DT"
+          }
+        ],
+        "invertY": true,
+        "legendLabelMap": {
+          "": "Control (n=8,7)",
+          "HFD": "HFD (n=6,1)"
+        },
+        "legendTitle": "Feeding condition",
+        "x": "spot_sizes",
+        "xLabel": "Spot size (\u00b5m)",
+        "xMax": "1200",
+        "xMin": "0",
+        "y": "charge_stim_mean",
+        "yLabel": "Charge (pC)",
+        "yMax": "",
+        "yMin": ""
+      },
+      "scope_key": "upload::SMS_VC_full.mat"
+    },
+    {
+      "dataset_label": "4067_processed.csv",
+      "dataset_source": "upload",
+      "name": "GLUT_singleAnimal",
+      "plot_type": "bar",
+      "preferences": {
+        "colorMap": {
+          "0.1948867687242798": "#60a5fa",
+          "GLUT1": "#60a5fa",
+          "GLUT3": "#34d399",
+          "open": "#c4bc00",
+          "sutured": "#000000"
+        },
+        "customOrder": [
+          "sutured",
+          "open"
+        ],
+        "err": "none",
+        "filters": [
+          {
+            "column": "Stain",
+            "value": "GLUT1"
+          }
+        ],
+        "group": "Experimental_Condition",
+        "labelMap": {
+          "0.1948867687242798": "0.1948867687242798 (n=1557 rows, ? animals)",
+          "GLUT1": "GLUT1 (n=694 rows, ? animals)",
+          "GLUT3": "GLUT3 (n=863 rows, ? animals)",
+          "open": "Open (n=315)",
+          "sutured": "Sutured (n=379)"
+        },
+        "log": true,
+        "order": "custom",
+        "value": "Top_Surface_Ratio",
+        "xLabel": "Experimental condition",
+        "yLabel": "Top surface expression ratio",
+        "yMax": "5",
+        "yMin": ".01"
+      },
+      "scope_key": "upload::4067_processed.csv"
+    },
+    {
+      "dataset_label": "4064_processed.csv",
+      "dataset_source": "upload",
+      "name": "GLUT_bar",
+      "plot_type": "bar",
+      "preferences": {
+        "barTestMethod": "ttest",
+        "colorMap": {
+          "0.1948867687242798": "#60a5fa",
+          "dark": "#60a5fa",
+          "open": "#c4bc00",
+          "sutured": "#606060"
+        },
+        "customOrder": [
+          "sutured",
+          "open"
+        ],
+        "err": "none",
+        "filters": [
+          {
+            "column": "Stain",
+            "mode": "include",
+            "value": "GLUT1"
+          }
+        ],
+        "group": "Experimental_Condition",
+        "labelMap": {
+          "0.1948867687242798": "0.1948867687242798",
+          "dark": "dark",
+          "open": "Open (n=408)",
+          "sutured": "Sutured (n=418)"
+        },
+        "log": true,
+        "order": "custom",
+        "showSignificanceLine": true,
+        "value": "Top_Surface_Ratio",
+        "xLabel": "Experimental condition",
+        "yLabel": "Top surface expression ratio",
+        "yMax": "",
+        "yMin": ""
+      },
+      "scope_key": "upload::4064_processed.csv"
+    },
+    {
+      "dataset_label": "",
+      "dataset_source": "dataset",
+      "name": "keep-me",
+      "plot_type": "line_by_row",
+      "preferences": {
+        "x": "a"
+      },
+      "scope_key": "dataset::__default__"
+    }
+  ]
+}

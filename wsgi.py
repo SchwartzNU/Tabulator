@@ -1,4 +1,3 @@
-from tabulator import create_app
+from tabulator import create_flask_app
 
-app = create_app()
-
+app = create_flask_app()

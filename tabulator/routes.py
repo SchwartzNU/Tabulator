@@ -1,5 +1,6 @@
 import os
 import inspect
+import json
 import dotenv
 from flask import (
     Blueprint,
@@ -31,6 +32,165 @@ import datajoint as dj
 
 bp = Blueprint("main", __name__)
 dotenv.load_dotenv()
+
+
+def _line_by_row_prefs_path() -> str:
+    os.makedirs(current_app.instance_path, exist_ok=True)
+    return os.path.join(current_app.instance_path, "line_by_row_presets.json")
+
+
+def _load_line_by_row_prefs_store():
+    path = _line_by_row_prefs_path()
+    if not os.path.exists(path):
+        return {"presets": []}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {"presets": []}
+    if not isinstance(data, dict):
+        return {"presets": []}
+    presets = data.get("presets")
+    if not isinstance(presets, list):
+        presets = []
+    return {"presets": presets}
+
+
+def _save_line_by_row_prefs_store(data) -> None:
+    path = _line_by_row_prefs_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, sort_keys=True)
+    os.replace(tmp_path, path)
+
+
+def _current_preset_scope():
+    dataset_id = request.args.get("dataset_id") or session.get("dataset_id") or ""
+    dataset_label = session.get("dataset_label") or dataset_id or ""
+    dataset_source = session.get("dataset_source") or "dataset"
+    scope_key = f"{dataset_source}::{dataset_label or dataset_id or '__default__'}"
+    return {
+        "scope_key": scope_key,
+        "dataset_id": dataset_id,
+        "dataset_label": dataset_label,
+        "dataset_source": dataset_source,
+    }
+
+
+def _plot_prefs_items(plot_type: str):
+    scope = _current_preset_scope()
+    store_data = _load_line_by_row_prefs_store()
+    items = []
+    for item in store_data.get("presets", []):
+        if not isinstance(item, dict):
+            continue
+        item_plot_type = str(item.get("plot_type") or "line_by_row")
+        if item_plot_type != plot_type:
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        items.append(item)
+    return scope, store_data, items
+
+
+def _plot_prefs_list_response(plot_type: str):
+    scope, _, items = _plot_prefs_items(plot_type)
+    presets = []
+    seen = set()
+    for item in items:
+        name = str(item.get("name") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        presets.append(
+            {
+                "name": name,
+                "dataset_label": str(item.get("dataset_label") or ""),
+                "dataset_source": str(item.get("dataset_source") or ""),
+            }
+        )
+    presets.sort(key=lambda item: item["name"].lower())
+    return jsonify(
+        {
+            "dataset_label": scope["dataset_label"],
+            "dataset_source": scope["dataset_source"],
+            "presets": presets,
+        }
+    )
+
+
+def _plot_prefs_get_response(plot_type: str, name: str):
+    _, _, items = _plot_prefs_items(plot_type)
+    wanted = str(name or "").strip()
+    if not wanted:
+        return jsonify({"error": "missing_name"}), 400
+    for item in items:
+        if str(item.get("name") or "").strip() != wanted:
+            continue
+        prefs = item.get("preferences")
+        if not isinstance(prefs, dict):
+            prefs = {}
+        return jsonify({"name": wanted, "preferences": prefs})
+    return jsonify({"error": "not_found"}), 404
+
+
+def _plot_prefs_save_response(plot_type: str):
+    payload = request.get_json(silent=True) or {}
+    name = str(payload.get("name") or "").strip()
+    preferences = payload.get("preferences")
+    if not name:
+        return jsonify({"error": "missing_name"}), 400
+    if not isinstance(preferences, dict):
+        return jsonify({"error": "bad_preferences"}), 400
+
+    scope = _current_preset_scope()
+    store_data = _load_line_by_row_prefs_store()
+    kept = []
+    for item in store_data.get("presets", []):
+        if not isinstance(item, dict):
+            continue
+        item_plot_type = str(item.get("plot_type") or "line_by_row")
+        same_name = str(item.get("name") or "").strip() == name
+        if item_plot_type == plot_type and same_name:
+            continue
+        kept.append(item)
+    kept.append(
+        {
+            "plot_type": plot_type,
+            "scope_key": scope["scope_key"],
+            "dataset_label": scope["dataset_label"],
+            "dataset_source": scope["dataset_source"],
+            "name": name,
+            "preferences": preferences,
+        }
+    )
+    store_data["presets"] = kept
+    _save_line_by_row_prefs_store(store_data)
+    return jsonify({"saved": True, "name": name})
+
+
+def _plot_prefs_delete_response(plot_type: str, name: str):
+    wanted = str(name or "").strip()
+    if not wanted:
+        return jsonify({"error": "missing_name"}), 400
+    store_data = _load_line_by_row_prefs_store()
+    kept = []
+    removed = False
+    for item in store_data.get("presets", []):
+        if not isinstance(item, dict):
+            continue
+        item_plot_type = str(item.get("plot_type") or "line_by_row")
+        same_name = str(item.get("name") or "").strip() == wanted
+        if item_plot_type == plot_type and same_name:
+            removed = True
+            continue
+        kept.append(item)
+    store_data["presets"] = kept
+    if removed:
+        _save_line_by_row_prefs_store(store_data)
+    return jsonify({"deleted": removed, "name": wanted})
 
 
 @bp.before_app_request
@@ -185,6 +345,10 @@ def _is_simple_value(value):
 def _column_is_simple(series, check_limit=1000):
     checked = 0
     for val in series:
+        if isinstance(val, np.ndarray) and val.size == 0:
+            continue
+        if isinstance(val, (np.ndarray, list, tuple, dict)):
+            return False
         if pd.isna(val):
             continue
         if not _is_simple_value(val):
@@ -193,6 +357,127 @@ def _column_is_simple(series, check_limit=1000):
         if checked >= check_limit:
             break
     return True
+
+
+def _series_is_simple(series, check_limit=1000):
+    if isinstance(series, pd.DataFrame):
+        series = series.iloc[:, 0]
+    return _column_is_simple(series, check_limit=check_limit)
+
+
+def _coerce_1d_numeric_array(value):
+    if isinstance(value, (list, tuple)):
+        value = np.asarray(value)
+    if not isinstance(value, np.ndarray):
+        return None
+    if value.ndim == 0:
+        return None
+    try:
+        arr = np.asarray(value, dtype=float)
+    except (TypeError, ValueError):
+        return None
+    arr = np.ravel(arr)
+    return arr
+
+
+def _coerce_reducible_numeric_array(value):
+    arr = _coerce_1d_numeric_array(value)
+    if arr is not None:
+        return arr, True
+    if isinstance(value, np.generic):
+        value = value.item()
+    if value is None:
+        return None, False
+    try:
+        if pd.isna(value):
+            return None, False
+    except Exception:
+        pass
+    if isinstance(value, (int, float, np.integer, np.floating, bool, np.bool_)):
+        return np.asarray([float(value)], dtype=float), False
+    return None, False
+
+
+def _series_is_numeric_vector(series, check_limit=250):
+    if isinstance(series, pd.DataFrame):
+        series = series.iloc[:, 0]
+    checked = 0
+    found_valid = False
+    for val in series:
+        if val is None:
+            continue
+        arr = _coerce_1d_numeric_array(val)
+        if arr is None:
+            try:
+                if pd.isna(val):
+                    continue
+            except Exception:
+                pass
+            return False
+        if arr.size == 0:
+            continue
+        found_valid = True
+        checked += 1
+        if checked >= check_limit:
+            break
+    return found_valid
+
+
+def _series_supports_vector_reduction(series, check_limit=250):
+    if isinstance(series, pd.DataFrame):
+        series = series.iloc[:, 0]
+    checked = 0
+    found_array_like = False
+    for val in series:
+        arr, came_from_array = _coerce_reducible_numeric_array(val)
+        if arr is None:
+            continue
+        if arr.size == 0:
+            continue
+        if came_from_array:
+            found_array_like = True
+        checked += 1
+        if checked >= check_limit:
+            break
+    return found_array_like
+
+
+def _json_simple_value(value):
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, np.ndarray) and value.size == 0:
+        return None
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (pd.Timestamp, pd.Timedelta)):
+        return str(value)
+    return str(value)
+
+
+def _normalize_filter_specs(filter_cols, filter_vals, filter_ops=None):
+    filter_cols = list(filter_cols or [])
+    filter_vals = list(filter_vals or [])
+    filter_ops = list(filter_ops or [])
+    if len(filter_cols) != len(filter_vals):
+        raise LoadError("bad_filters")
+    if not filter_ops:
+        filter_ops = ["include"] * len(filter_cols)
+    elif len(filter_ops) != len(filter_cols):
+        raise LoadError("bad_filters")
+    normalized = []
+    for col, val, op in zip(filter_cols, filter_vals, filter_ops):
+        op = str(op or "include").strip().lower()
+        if op not in {"include", "exclude"}:
+            raise LoadError("bad_filter_op")
+        normalized.append((col, val, op))
+    return normalized
 
 
 def _sanitize_dataset(dataset: DataSet):
@@ -427,7 +712,7 @@ def index():
     if ds is not None:
         try:
             preview_df = ds.df.head(10).copy()
-            preview_df = preview_df.applymap(_preview_value)
+            preview_df = preview_df.map(_preview_value)
             preview_html = preview_df.to_html(classes=["preview"], border=0)
             info = {
                 "rows": int(ds.df.shape[0]),
@@ -513,9 +798,6 @@ def api_db_load():
     for col in extra_cols or []:
         units.setdefault(str(col), "")
     ds = DataSet(df=df, units=units)
-    ds, dropped = _sanitize_dataset(ds)
-    if ds.df.shape[1] == 0:
-        return jsonify({"error": "no_simple_columns", "detail": f"{table} does not contain numeric or text columns Tabulator can use."}), 400
     dataset_id = store.put(ds)
     session["dataset_id"] = dataset_id
     session["dataset_label"] = table
@@ -523,8 +805,6 @@ def api_db_load():
     note = f"Loaded {table} from {schema}: {ds.df.shape[0]} rows, {ds.df.shape[1]} cols."
     if skipped_blob_cols:
         note += f" Skipped {len(skipped_blob_cols)} blob column(s)."
-    if dropped:
-        note += f" Skipped {len(dropped)} unsupported column(s)."
     flash(note)
     return jsonify(
         {
@@ -533,7 +813,7 @@ def api_db_load():
             "rows": int(ds.df.shape[0]),
             "cols": int(ds.df.shape[1]),
             "skipped_blob_columns": [str(c) for c in skipped_blob_cols],
-            "dropped_columns": [str(c) for c in dropped],
+            "dropped_columns": [],
             "redirect": url_for("main.index", _anchor="dataset-card"),
         }
     )
@@ -643,8 +923,89 @@ def api_columns():
             return False
 
     for c in df.columns:
-        cols.append({"name": str(c), "is_numeric": bool(is_numeric_dtype(df[c]))})
+        is_simple = _series_is_simple(df[c])
+        is_vector = _series_is_numeric_vector(df[c])
+        is_reducible_vector = _series_supports_vector_reduction(df[c])
+        cols.append(
+            {
+                "name": str(c),
+                "is_numeric": bool(is_simple and is_numeric_dtype(df[c])),
+                "is_simple": bool(is_simple),
+                "is_vector": bool(is_vector),
+                "is_reducible_vector": bool(is_reducible_vector),
+            }
+        )
     return jsonify({"columns": cols})
+
+
+@bp.get("/api/column_values")
+def api_column_values():
+    column = request.args.get("column")
+    if not column:
+        return jsonify({"error": "missing_column"}), 400
+    ds, dataset_id = _get_dataset_from_request()
+    if ds is None:
+        return jsonify({"error": "no_dataset"}), 404
+    df = ds.df
+    if column not in df.columns:
+        return jsonify({"error": "bad_column"}), 400
+    if not _series_is_simple(df[column]):
+        return jsonify({"error": "bad_column_type"}), 400
+
+    series = df[column]
+    if isinstance(series, pd.DataFrame):
+        series = series.iloc[:, 0]
+    values = []
+    seen = set()
+    for raw in series.tolist():
+        val = _json_simple_value(raw)
+        key = "" if val is None else str(val)
+        if key in seen:
+            continue
+        seen.add(key)
+        values.append({"value": key, "label": key if key else "(blank)"})
+    values.sort(key=lambda item: item["label"])
+    return jsonify({"column": column, "values": values})
+
+
+@bp.get("/api/plot_prefs/line_by_row")
+def api_line_by_row_prefs_list():
+    return _plot_prefs_list_response("line_by_row")
+
+
+@bp.get("/api/plot_prefs/line_by_row/<name>")
+def api_line_by_row_prefs_get(name):
+    return _plot_prefs_get_response("line_by_row", name)
+
+
+@bp.post("/api/plot_prefs/line_by_row")
+def api_line_by_row_prefs_save():
+    return _plot_prefs_save_response("line_by_row")
+
+
+@bp.delete("/api/plot_prefs/line_by_row/<name>")
+def api_line_by_row_prefs_delete(name):
+    return _plot_prefs_delete_response("line_by_row", name)
+
+
+@bp.get("/api/plot_prefs/bar")
+def api_bar_prefs_list():
+    return _plot_prefs_list_response("bar")
+
+
+@bp.get("/api/plot_prefs/bar/<name>")
+def api_bar_prefs_get(name):
+    return _plot_prefs_get_response("bar", name)
+
+
+@bp.post("/api/plot_prefs/bar")
+def api_bar_prefs_save():
+    return _plot_prefs_save_response("bar")
+
+
+@bp.delete("/api/plot_prefs/bar/<name>")
+def api_bar_prefs_delete(name):
+    return _plot_prefs_delete_response("bar", name)
 
 
 @bp.get("/api/pca")
@@ -781,6 +1142,8 @@ def api_pca_scores():
     else:
         id_series = pd.Series([""] * len(idx), index=idx)
     if color_col and color_col in df.columns:
+        if not _series_is_simple(df[color_col]):
+            return jsonify({"error": "bad_color_column_type"}), 400
         color_series = df.loc[idx, color_col]
     else:
         color_series = None
@@ -888,6 +1251,8 @@ def api_classify_train():
     df = ds.df
     if label_col not in df.columns:
         return jsonify({"error": "label_not_found"}), 400
+    if not _series_is_simple(df[label_col]):
+        return jsonify({"error": "bad_label_column_type"}), 400
 
     # Build features (numeric only) and labels
     Xdf = df.select_dtypes(include=["number"]).copy()
@@ -1222,6 +1587,8 @@ def api_dimred():
     else:
         id_series = pd.Series([""] * len(idx), index=idx)
     if color_col and color_col in df.columns:
+        if not _series_is_simple(df[color_col]):
+            return jsonify({"error": "bad_color_column_type"}), 400
         color_series = df.loc[idx, color_col]
     else:
         color_series = None
@@ -1423,31 +1790,56 @@ def api_dimred():
     )
 
 
-@bp.get("/api/plot/bar")
-def api_plot_bar():
-    value = request.args.get("value")
-    group = request.args.get("group")
-    if not value or not group:
-        return jsonify({"error": "missing_params"}), 400
+def _build_bar_plot_payload(ds, value: str, group: str, filter_cols, filter_vals, filter_ops=None):
+    def _parse_value_spec(raw_value: str):
+        if raw_value.endswith("::mean"):
+            return raw_value[:-6], "mean"
+        if raw_value.endswith("::median"):
+            return raw_value[:-8], "median"
+        return raw_value, None
 
-    ds, dataset_id = _get_dataset_from_request()
-    if ds is None:
-        return jsonify({"error": "no_dataset"}), 404
     df = ds.df
-    if value not in df.columns or group not in df.columns:
-        return jsonify({"error": "bad_columns"}), 400
+    value_col, reduce_mode = _parse_value_spec(value)
+    if value_col not in df.columns or group not in df.columns:
+        raise LoadError("bad_columns")
+    if not _series_is_simple(df[group]):
+        raise LoadError("bad_group_column_type")
+    if reduce_mode is None and not _series_is_simple(df[value_col]):
+        raise LoadError("bad_value_column_type")
+    if reduce_mode is not None and not _series_supports_vector_reduction(df[value_col]):
+        raise LoadError("bad_vector_value_column")
+    filter_specs = _normalize_filter_specs(filter_cols, filter_vals, filter_ops)
+    filters = []
+    for col, val, op in filter_specs:
+        if not col:
+            continue
+        if col not in df.columns:
+            raise LoadError("bad_filter_column")
+        if not _series_is_simple(df[col]):
+            raise LoadError("bad_filter_column_type")
+        filters.append((col, val, op))
 
-    # Select columns as 1-D Series even if duplicate names exist
     import pandas as pd
-
     gcol = df[group]
     if isinstance(gcol, pd.DataFrame):
         gcol = gcol.iloc[:, 0]
-    vcol = df[value]
+    vcol = df[value_col]
     if isinstance(vcol, pd.DataFrame):
         vcol = vcol.iloc[:, 0]
-    # Coerce value column to numeric and drop NaNs
-    vcol = pd.to_numeric(vcol, errors="coerce")
+    if reduce_mode is None:
+        vcol = pd.to_numeric(vcol, errors="coerce")
+    else:
+        def _reduce_vector_cell(raw):
+            arr, _ = _coerce_reducible_numeric_array(raw)
+            if arr is None or arr.size == 0:
+                return np.nan
+            arr = arr[np.isfinite(arr)]
+            if arr.size == 0:
+                return np.nan
+            if reduce_mode == "median":
+                return float(np.median(arr))
+            return float(np.mean(arr))
+        vcol = vcol.map(_reduce_vector_cell)
     # Prefer segment_ID, then segmentID, then cell_name for tooltips. Do not fallback to row index.
     id_source = None
     for cname in ("segment_ID", "segmentID", "cell_name"):
@@ -1460,10 +1852,36 @@ def api_plot_bar():
             idcol = idcol.iloc[:, 0]
     else:
         idcol = None
+    animal_source = None
+    for cname in ("animal_id", "animalID", "animalId", "animal"):
+        if cname in df.columns and _series_is_simple(df[cname]):
+            animal_source = cname
+            break
+    if animal_source is not None:
+        animalcol = df[animal_source]
+        if isinstance(animalcol, pd.DataFrame):
+            animalcol = animalcol.iloc[:, 0]
+    else:
+        animalcol = None
     data_dict = {"_group": gcol, "_value": vcol}
     if idcol is not None:
         data_dict["_id"] = idcol
-    tmp = pd.DataFrame(data_dict).dropna(subset=["_value"])
+    if animalcol is not None:
+        data_dict["_animal_id"] = animalcol
+    tmp = pd.DataFrame(data_dict, index=df.index)
+    if filters:
+        mask = pd.Series(True, index=df.index)
+        for col, wanted, op in filters:
+            fcol = df[col]
+            if isinstance(fcol, pd.DataFrame):
+                fcol = fcol.iloc[:, 0]
+            keys = fcol.map(lambda raw: "" if _json_simple_value(raw) is None else str(_json_simple_value(raw)))
+            if op == "exclude":
+                mask &= keys != wanted
+            else:
+                mask &= keys == wanted
+        tmp = tmp.loc[mask]
+    tmp = tmp.dropna(subset=["_value"])
 
     # Group and compute
     groups_out = []
@@ -1485,25 +1903,117 @@ def api_plot_bar():
             mean_val = float(gdf["_value"].mean())
         except Exception:
             mean_val = None
+        animal_count = None
+        if "_animal_id" in gdf.columns:
+            animal_keys = {
+                str(val)
+                for val in (_json_simple_value(raw) for raw in gdf["_animal_id"].tolist())
+                if val is not None and str(val) != ""
+            }
+            animal_count = len(animal_keys)
         groups_out.append(
             {
                 "name": str(gval),
                 "count": len(vals),
+                "animal_count": animal_count,
                 "mean": mean_val,
                 "values": vals,
                 "points": points,
             }
         )
 
-    unit = ds.units.get(value, "") if isinstance(ds.units, dict) else ""
+    value_label = f"{value_col} ({reduce_mode})" if reduce_mode else value_col
+    unit = ds.units.get(value_col, "") if isinstance(ds.units, dict) else ""
     group_unit = ds.units.get(group, "") if isinstance(ds.units, dict) else ""
+    return {
+        "value": value_label,
+        "value_key": value,
+        "value_column": value_col,
+        "value_reduce": reduce_mode,
+        "group": group,
+        "unit": unit,
+        "group_unit": group_unit,
+        "filters": [{"column": col, "value": val, "mode": op} for col, val, op in filters],
+        "groups": groups_out,
+    }
+
+
+@bp.get("/api/plot/bar")
+def api_plot_bar():
+    value = request.args.get("value")
+    group = request.args.get("group")
+    filter_cols = request.args.getlist("filter_col")
+    filter_vals = request.args.getlist("filter_val")
+    filter_ops = request.args.getlist("filter_op")
+    if not value or not group:
+        return jsonify({"error": "missing_params"}), 400
+
+    ds, dataset_id = _get_dataset_from_request()
+    if ds is None:
+        return jsonify({"error": "no_dataset"}), 404
+    try:
+        payload = _build_bar_plot_payload(ds, value, group, filter_cols, filter_vals, filter_ops)
+    except LoadError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(payload)
+
+
+@bp.get("/api/plot/bar_test")
+def api_plot_bar_test():
+    value = request.args.get("value")
+    group = request.args.get("group")
+    method = (request.args.get("method") or "ttest").strip().lower()
+    filter_cols = request.args.getlist("filter_col")
+    filter_vals = request.args.getlist("filter_val")
+    filter_ops = request.args.getlist("filter_op")
+    if not value or not group:
+        return jsonify({"error": "missing_params"}), 400
+    if method not in {"ttest", "mannwhitney"}:
+        return jsonify({"error": "bad_method"}), 400
+
+    ds, dataset_id = _get_dataset_from_request()
+    if ds is None:
+        return jsonify({"error": "no_dataset"}), 404
+    try:
+        payload = _build_bar_plot_payload(ds, value, group, filter_cols, filter_vals, filter_ops)
+    except LoadError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    groups_out = payload.get("groups", [])
+    if len(groups_out) != 2:
+        return jsonify({"error": "requires_two_groups"}), 400
+    g1, g2 = groups_out
+    vals1 = [float(v) for v in g1.get("values", []) if isinstance(v, (int, float))]
+    vals2 = [float(v) for v in g2.get("values", []) if isinstance(v, (int, float))]
+    if not vals1 or not vals2:
+        return jsonify({"error": "empty_group"}), 400
+
+    try:
+        from scipy import stats  # type: ignore
+    except Exception:
+        return jsonify({"error": "missing_scipy"}), 500
+
+    if method == "ttest":
+        result = stats.ttest_ind(vals1, vals2, equal_var=False, alternative="two-sided", nan_policy="omit")
+        statistic = float(result.statistic)
+        p_value = float(result.pvalue)
+        summary = "Welch two-sample t-test"
+    else:
+        result = stats.mannwhitneyu(vals1, vals2, alternative="two-sided")
+        statistic = float(result.statistic)
+        p_value = float(result.pvalue)
+        summary = "Mann-Whitney U test"
+
     return jsonify(
         {
-            "value": value,
-            "group": group,
-            "unit": unit,
-            "group_unit": group_unit,
-            "groups": groups_out,
+            "method": method,
+            "summary": summary,
+            "statistic": statistic,
+            "p_value": p_value,
+            "groups": [
+                {"name": str(g1.get("name", "")), "count": len(vals1)},
+                {"name": str(g2.get("name", "")), "count": len(vals2)},
+            ],
         }
     )
 
@@ -1539,6 +2049,8 @@ def api_plot_scatter():
     # Optional group
     gseries = None
     if group and group in df.columns:
+        if not _series_is_simple(df[group]):
+            return jsonify({"error": "bad_group_column_type"}), 400
         gseries = df[group]
         if isinstance(gseries, pd.DataFrame):
             gseries = gseries.iloc[:, 0]
@@ -1633,6 +2145,132 @@ def api_plot_scatter():
     )
 
 
+@bp.get("/api/plot/line_by_row")
+def api_plot_line_by_row():
+    x = request.args.get("x")
+    y = request.args.get("y")
+    color_col = request.args.get("color")
+    filter_cols = request.args.getlist("filter_col")
+    filter_vals = request.args.getlist("filter_val")
+    filter_ops = request.args.getlist("filter_op")
+    if not x or not y:
+        return jsonify({"error": "missing_params"}), 400
+
+    ds, dataset_id = _get_dataset_from_request()
+    if ds is None:
+        return jsonify({"error": "no_dataset"}), 404
+    df = ds.df
+    if x not in df.columns or y not in df.columns:
+        return jsonify({"error": "bad_columns"}), 400
+    if not _series_is_numeric_vector(df[x]) or not _series_is_numeric_vector(df[y]):
+        return jsonify({"error": "bad_vector_columns"}), 400
+    if color_col:
+        if color_col not in df.columns:
+            return jsonify({"error": "bad_color_column"}), 400
+        if not _series_is_simple(df[color_col]):
+            return jsonify({"error": "bad_color_column_type"}), 400
+    try:
+        filter_specs = _normalize_filter_specs(filter_cols, filter_vals, filter_ops)
+    except LoadError as exc:
+        return jsonify({"error": str(exc)}), 400
+    filters = []
+    for col, val, op in filter_specs:
+        if not col:
+            continue
+        if col not in df.columns:
+            return jsonify({"error": "bad_filter_column"}), 400
+        if not _series_is_simple(df[col]):
+            return jsonify({"error": "bad_filter_column_type"}), 400
+        filters.append((col, val, op))
+
+    id_source = None
+    for cname in ("cell_name", "segment_ID", "segmentID"):
+        if cname in df.columns and _series_is_simple(df[cname]):
+            id_source = cname
+            break
+    id_series = df[id_source] if id_source is not None else None
+    if isinstance(id_series, pd.DataFrame):
+        id_series = id_series.iloc[:, 0]
+    animal_source = None
+    for cname in ("animal_id", "animalID", "animalId", "animal"):
+        if cname in df.columns and _series_is_simple(df[cname]):
+            animal_source = cname
+            break
+    animal_series = df[animal_source] if animal_source is not None else None
+    if isinstance(animal_series, pd.DataFrame):
+        animal_series = animal_series.iloc[:, 0]
+    color_series = df[color_col] if color_col else None
+    if isinstance(color_series, pd.DataFrame):
+        color_series = color_series.iloc[:, 0]
+
+    traces = []
+    skipped_rows = 0
+    for idx in df.index:
+        include = True
+        for col, wanted, op in filters:
+            actual = _json_simple_value(df.at[idx, col])
+            actual_key = "" if actual is None else str(actual)
+            matches = actual_key == wanted
+            if (op == "include" and not matches) or (op == "exclude" and matches):
+                include = False
+                break
+        if not include:
+            skipped_rows += 1
+            continue
+        x_arr = _coerce_1d_numeric_array(df.at[idx, x])
+        y_arr = _coerce_1d_numeric_array(df.at[idx, y])
+        if x_arr is None or y_arr is None or x_arr.size == 0 or y_arr.size == 0:
+            skipped_rows += 1
+            continue
+        if x_arr.size != y_arr.size:
+            skipped_rows += 1
+            continue
+        mask = np.isfinite(x_arr) & np.isfinite(y_arr)
+        if not np.any(mask):
+            skipped_rows += 1
+            continue
+        x_vals = x_arr[mask]
+        y_vals = y_arr[mask]
+        if x_vals.size == 0:
+            skipped_rows += 1
+            continue
+        row_id = ""
+        if id_series is not None:
+            row_id = str(id_series.loc[idx])
+        if not row_id:
+            row_id = f"row {idx}"
+        color_value = _json_simple_value(color_series.loc[idx]) if color_series is not None else None
+        animal_value = _json_simple_value(animal_series.loc[idx]) if animal_series is not None else None
+        traces.append(
+            {
+                "id": row_id,
+                "x": x_vals.astype(float).tolist(),
+                "y": y_vals.astype(float).tolist(),
+                "color_value": color_value,
+                "animal_value": animal_value,
+            }
+        )
+
+    if not traces:
+        return jsonify({"error": "no_valid_rows"}), 400
+
+    x_unit = ds.units.get(x, "") if isinstance(ds.units, dict) else ""
+    y_unit = ds.units.get(y, "") if isinstance(ds.units, dict) else ""
+    return jsonify(
+        {
+            "x": x,
+            "y": y,
+            "x_unit": x_unit,
+            "y_unit": y_unit,
+            "color_column": color_col if color_col else None,
+            "filters": [{"column": col, "value": val} for col, val in filters],
+            "traces": traces,
+            "n_rows": len(traces),
+            "skipped_rows": skipped_rows,
+        }
+    )
+
+
 @bp.route("/upload", methods=["POST"])  # Handle file upload
 def upload():
     if "datafile" not in request.files:
@@ -1660,17 +2298,11 @@ def upload():
     except LoadError as e:
         flash(f"Uploaded but failed to parse: {e}")
         return redirect(url_for("main.index"))
-    ds, dropped = _sanitize_dataset(ds)
-    if ds.df.shape[1] == 0:
-        flash("Uploaded data has no numeric or text columns that Tabulator can use.")
-        return redirect(url_for("main.index"))
     dataset_id = store.put(ds)
     session["dataset_id"] = dataset_id
     session["dataset_label"] = filename
     session["dataset_source"] = "upload"
     msg = f"Loaded {filename}: {ds.df.shape[0]} rows, {ds.df.shape[1]} cols"
-    if dropped:
-        msg += f" (skipped {len(dropped)} unsupported column(s))"
     flash(msg)
     return redirect(url_for("main.index", _anchor="preview"))
 
