@@ -2116,7 +2116,7 @@
       groupRows.forEach((row) => {
         const text = row.x.map((xv, j) => `${row.id}<br>${xLabel}: ${xv}<br>${yLabel}: ${row.y[j]}`);
         traces.push({
-          type: 'scattergl',
+          type: 'scatter',
           mode: 'lines',
           name: legendDisplayLabel,
           legendgroup: colorKey,
@@ -2242,6 +2242,7 @@
     const groupId = `plot-${id}-group`;
     const xLabelId = `plot-${id}-bar-x-label`;
     const yLabelId = `plot-${id}-bar-y-label`;
+    const xTickAngleId = `plot-${id}-bar-x-tick-angle`;
     const errId = `plot-${id}-err`;
     const orderId = `plot-${id}-order`;
     const logId = `plot-${id}-log`;
@@ -2280,6 +2281,14 @@
         <span class="field">
           <label for="${yLabelId}">Y axis label</label>
           <input id="${yLabelId}" type="text" />
+        </span>
+        <span class="field">
+          <label for="${xTickAngleId}">Label angle</label>
+          <select id="${xTickAngleId}">
+            <option value="0">0°</option>
+            <option value="45">45°</option>
+            <option value="90">90°</option>
+          </select>
         </span>
         <span class="field">
           <label for="${errId}">Error bars</label>
@@ -2350,6 +2359,7 @@
     const groupSel = document.getElementById(groupId);
     const xLabelInp = document.getElementById(xLabelId);
     const yLabelInp = document.getElementById(yLabelId);
+    const xTickAngleSel = document.getElementById(xTickAngleId);
     const errSel = document.getElementById(errId);
     const orderSel = document.getElementById(orderId);
     const logChk = document.getElementById(logId);
@@ -2561,6 +2571,7 @@
         log: !!logChk.checked,
         xLabel: (xLabelInp.value || '').trim() || (currentData?.group || groupSel.value || ''),
         yLabel: (yLabelInp.value || '').trim() || (currentData?.value || value || ''),
+        xTickAngle: xTickAngleSel.value === '90' ? 90 : (xTickAngleSel.value === '45' ? 45 : 0),
         colorMap: currentColors,
         labelMap: currentLabelMap,
         customOrder: currentCustomOrder.slice(),
@@ -2586,6 +2597,7 @@
         group: groupSel.value || '',
         xLabel: xLabelInp.value || '',
         yLabel: yLabelInp.value || '',
+        xTickAngle: xTickAngleSel.value === '90' ? '90' : (xTickAngleSel.value === '45' ? '45' : '0'),
         err: errSel.value || 'none',
         order: orderSel.value || 'label_asc',
         log: !!logChk.checked,
@@ -2612,6 +2624,9 @@
       if (prefs.group && simple.some(c => c.name === prefs.group)) groupSel.value = prefs.group;
       applyTextInputValue(xLabelInp, prefs.xLabel || '');
       applyTextInputValue(yLabelInp, prefs.yLabel || '');
+      xTickAngleSel.value = String(prefs.xTickAngle || '0') === '90'
+        ? '90'
+        : (String(prefs.xTickAngle || '0') === '45' ? '45' : '0');
       errSel.value = prefs.err === 'sd' || prefs.err === 'sem' ? prefs.err : 'none';
       orderSel.value = prefs.order || 'label_asc';
       logChk.checked = !!prefs.log;
@@ -2836,7 +2851,7 @@
         rerenderCurrent();
       });
     });
-    [errSel, orderSel, logChk, yminInp, ymaxInp].forEach((el) => {
+    [xTickAngleSel, errSel, orderSel, logChk, yminInp, ymaxInp].forEach((el) => {
       el.addEventListener('input', rerenderCurrent);
       el.addEventListener('change', rerenderCurrent);
     });
@@ -3107,10 +3122,10 @@
     }
 
     const width = container.clientWidth || 800;
-    const crowded = xlabels.length > 10;
     const small = width < 560;
-    const tickAngle = crowded ? -45 : 0;
-    const bottomMargin = crowded ? 110 : 60;
+    const requestedAngle = opts.xTickAngle === 90 ? 90 : (opts.xTickAngle === 45 ? 45 : 0);
+    const tickAngle = requestedAngle === 0 ? 0 : -requestedAngle;
+    const bottomMargin = requestedAngle === 90 ? 160 : (requestedAngle === 45 ? 110 : 60);
     const yTitleHasBreak = yTitle.indexOf('<br>') !== -1;
     const height = (small ? 280 : 360) + (yTitleHasBreak ? 40 : 0);
     const leftMargin = (yTitle.length > 24) ? 90 : 70;

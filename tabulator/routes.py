@@ -2263,7 +2263,7 @@ def api_plot_line_by_row():
             "x_unit": x_unit,
             "y_unit": y_unit,
             "color_column": color_col if color_col else None,
-            "filters": [{"column": col, "value": val} for col, val in filters],
+            "filters": [{"column": col, "value": val, "mode": op} for col, val, op in filters],
             "traces": traces,
             "n_rows": len(traces),
             "skipped_rows": skipped_rows,
