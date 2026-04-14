@@ -182,6 +182,43 @@
         "yMin": ""
       },
       "scope_key": "upload::T_SMS_CA_FULL.mat"
+    },
+    {
+      "dataset_label": "SMA_CA_control_and_FR.mat",
+      "dataset_source": "upload",
+      "name": "SMS_CA_FR",
+      "plot_type": "line_by_row",
+      "preferences": {
+        "avgMetric": "sem",
+        "avgStyle": "shaded",
+        "color": "feeding_condition",
+        "colorMap": {
+          "": "#000000",
+          "FR": "#ff2600"
+        },
+        "filters": [
+          {
+            "column": "cell_type",
+            "mode": "include",
+            "value": "ON alpha"
+          }
+        ],
+        "invertY": false,
+        "legendLabelMap": {
+          "": "Control (n=163 cells 92 animals)",
+          "FR": "Food restricted (n=15, 2)"
+        },
+        "legendTitle": "Feeding condition",
+        "x": "spot_sizes",
+        "xLabel": "Spot size (\u00b5m)",
+        "xMax": "1200",
+        "xMin": "0",
+        "y": "spikes_stim_mean",
+        "yLabel": "Spikes",
+        "yMax": "",
+        "yMin": ""
+      },
+      "scope_key": "upload::SMA_CA_control_and_FR.mat"
     }
   ]
 }
