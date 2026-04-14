@@ -398,6 +398,78 @@ def _coerce_reducible_numeric_array(value):
     return None, False
 
 
+def _prepare_pca_numeric_frame(
+    df: pd.DataFrame, extra_drop_names: Optional[set[str]] = None
+):
+    num_df = df.select_dtypes(include=["number"]).copy()
+    drop_names = {"segmentID", "segment_ID", "/segment ID", "/segment_ID"}
+    if extra_drop_names:
+        drop_names |= {str(name) for name in extra_drop_names}
+    keep_cols = [c for c in num_df.columns if str(c) not in drop_names]
+    num_df = num_df[keep_cols]
+    if num_df.shape[1] < 1:
+        return None, {"error": "no_numeric_columns"}
+
+    X = num_df.to_numpy(dtype=float)
+    finite_mask = np.isfinite(X)
+
+    observed_per_col = finite_mask.sum(axis=0)
+    usable_col_mask = observed_per_col >= 2
+    dropped_sparse = [
+        str(c) for c, keep in zip(num_df.columns, usable_col_mask) if not bool(keep)
+    ]
+    if not np.any(usable_col_mask):
+        return None, {"error": "no_numeric_columns"}
+
+    num_df = num_df.loc[:, usable_col_mask]
+    X = X[:, usable_col_mask]
+    finite_mask = finite_mask[:, usable_col_mask]
+
+    usable_row_mask = finite_mask.any(axis=1)
+    if int(usable_row_mask.sum()) < 2:
+        return None, {"error": "not_enough_rows", "rows": int(usable_row_mask.sum())}
+
+    num_df = num_df.loc[usable_row_mask].copy()
+    X = X[usable_row_mask]
+    finite_mask = finite_mask[usable_row_mask]
+
+    means = np.nanmean(np.where(finite_mask, X, np.nan), axis=0, keepdims=True)
+    centered_observed = np.where(finite_mask, X - means, np.nan)
+    sd = np.nanstd(centered_observed, axis=0, ddof=1)
+    variable_mask = np.isfinite(sd) & (sd > 0)
+    dropped_constant = [
+        str(c) for c, keep in zip(num_df.columns, variable_mask) if not bool(keep)
+    ]
+    if not np.any(variable_mask):
+        return None, {"error": "no_variable_features"}
+
+    num_df = num_df.loc[:, variable_mask].copy()
+    X = X[:, variable_mask]
+    finite_mask = finite_mask[:, variable_mask]
+    means = means[:, variable_mask]
+    sd = sd[variable_mask]
+
+    X_imputed = X.copy()
+    if X_imputed.size:
+        X_imputed[~finite_mask] = np.broadcast_to(means, X_imputed.shape)[~finite_mask]
+    centered = X - means
+    centered[~finite_mask] = 0.0
+    Xz = centered / sd
+
+    return (
+        {
+            "num_df": num_df,
+            "X_imputed": X_imputed,
+            "Xz": Xz,
+            "row_index": num_df.index,
+            "columns": [str(c) for c in num_df.columns],
+            "dropped_sparse_columns": dropped_sparse,
+            "dropped_constant_columns": dropped_constant,
+        },
+        None,
+    )
+
+
 def _series_is_numeric_vector(series, check_limit=250):
     if isinstance(series, pd.DataFrame):
         series = series.iloc[:, 0]
@@ -1013,7 +1085,7 @@ def api_pca():
     """Run PCA on all numeric columns and return explained variance ratios.
 
     - Uses centered data (mean subtraction per feature).
-    - Drops rows with NaNs across selected numeric columns.
+    - Keeps rows with partial missing data via per-feature mean imputation.
     - Returns explained_variance_ratio per component and cumulative.
     """
     ds, dataset_id = _get_dataset_from_request()
@@ -1027,39 +1099,14 @@ def api_pca():
     except Exception:
         return jsonify({"error": "missing_deps"}), 500
 
-    # Select numeric columns only
-    num_df = df.select_dtypes(include=["number"]).copy()
-    # Drop identifier-like numeric columns if present by common names
-    drop_names = {"segmentID", "segment_ID"}
-    keep_cols = [c for c in num_df.columns if str(c) not in drop_names]
-    num_df = num_df[keep_cols]
+    prep, error = _prepare_pca_numeric_frame(df)
+    if error is not None:
+        return jsonify(error), 400
 
-    if num_df.shape[1] < 1:
-        return jsonify({"error": "no_numeric_columns"}), 400
-
-    # Drop rows with NaNs
-    num_df = num_df.dropna(axis=0, how="any")
-    n_samples = int(num_df.shape[0])
-    n_features = int(num_df.shape[1])
-    if n_samples < 2:
-        return jsonify({"error": "not_enough_rows", "rows": n_samples}), 400
-
-    # Center and standardize to z-scores (per-feature mean 0, sd 1)
-    X = num_df.to_numpy(dtype=float)
-    mean = np.nanmean(X, axis=0, keepdims=True)
-    Xc = X - mean
-    # Sample standard deviation (ddof=1), consistent with explained variance computation
-    sd = Xc.std(axis=0, ddof=1, keepdims=False)
-    # Drop constant features (sd <= 0 or non-finite)
-    keep_mask = np.isfinite(sd) & (sd > 0)
-    dropped = [str(c) for c, k in zip(num_df.columns, keep_mask) if not bool(k)]
-    if not np.any(keep_mask):
-        return jsonify({"error": "no_variable_features"}), 400
-    Xc = Xc[:, keep_mask]
-    sd = sd[keep_mask]
-    cols_kept = [str(c) for c, k in zip(num_df.columns, keep_mask) if bool(k)]
-    n_features = int(len(cols_kept))
-    Xz = Xc / sd
+    Xz = prep["Xz"]
+    cols_kept = prep["columns"]
+    n_samples = int(Xz.shape[0])
+    n_features = int(Xz.shape[1])
     try:
         # SVD on standardized data
         U, S, Vt = np.linalg.svd(Xz, full_matrices=False)
@@ -1084,7 +1131,8 @@ def api_pca():
             "components": int(Vt.shape[0]),
             "loadings": Vt.tolist(),  # shape: [components][n_features]
             "standardized": True,
-            "dropped_constant_columns": dropped,
+            "dropped_sparse_columns": prep["dropped_sparse_columns"],
+            "dropped_constant_columns": prep["dropped_constant_columns"],
         }
     )
 
@@ -1119,18 +1167,10 @@ def api_pca_scores():
     if len(pcs_list) not in (2, 3) or any(i < 1 for i in pcs_list):
         return jsonify({"error": "bad_pcs"}), 400
 
-    # Build numeric data and align ids/color
-    num_df = df.select_dtypes(include=["number"]).copy()
-    drop_names = {"segmentID", "segment_ID"}
-    feat_cols = [c for c in num_df.columns if str(c) not in drop_names]
-    num_df = num_df[feat_cols]
-    if num_df.shape[1] < 1:
-        return jsonify({"error": "no_numeric_columns"}), 400
-
-    clean = num_df.dropna(axis=0, how="any")
-    if clean.shape[0] < 2:
-        return jsonify({"error": "not_enough_rows", "rows": int(clean.shape[0])}), 400
-    idx = clean.index
+    prep, error = _prepare_pca_numeric_frame(df)
+    if error is not None:
+        return jsonify(error), 400
+    idx = prep["row_index"]
 
     id_source = None
     for cname in ("segmentID", "cell_name"):
@@ -1149,13 +1189,7 @@ def api_pca_scores():
         color_series = None
 
     # Standardize and PCA
-    X = clean.to_numpy(dtype=float)
-    X = X - np.nanmean(X, axis=0, keepdims=True)
-    sd = X.std(axis=0, ddof=1)
-    keep_mask = np.isfinite(sd) & (sd > 0)
-    if not np.any(keep_mask):
-        return jsonify({"error": "no_variable_features"}), 400
-    Xz = X[:, keep_mask] / sd[keep_mask]
+    Xz = prep["Xz"]
     try:
         U, S, Vt = np.linalg.svd(Xz, full_matrices=False)
         n = Xz.shape[0]
@@ -1254,22 +1288,24 @@ def api_classify_train():
     if not _series_is_simple(df[label_col]):
         return jsonify({"error": "bad_label_column_type"}), 400
 
-    # Build features (numeric only) and labels
-    Xdf = df.select_dtypes(include=["number"]).copy()
-    # drop common ID-like fields and the label if numeric
-    drop_names = {"segmentID", "segment_ID", label_col}
-    feat_cols = [c for c in Xdf.columns if str(c) not in drop_names]
+    prep, error = _prepare_pca_numeric_frame(df, extra_drop_names={label_col})
+    if error is not None:
+        if error.get("error") == "no_numeric_columns":
+            return jsonify({"error": "no_features"}), 400
+        return jsonify(error), 400
+
+    feat_cols = prep["columns"]
     if not feat_cols:
         return jsonify({"error": "no_features"}), 400
 
-    y_series = df[label_col]
-    # Align frames and drop rows with NaNs across features or missing label
-    work = pd.DataFrame({"__y": y_series})
-    for c in feat_cols:
-        work[c] = df[c]
-    work = work.dropna(axis=0, how="any")
-    if work.shape[0] < 2:
+    y_series = df.loc[prep["row_index"], label_col]
+    label_mask = ~pd.isna(y_series)
+    if int(label_mask.sum()) < 2:
         return jsonify({"error": "not_enough_rows"}), 400
+
+    work = pd.DataFrame(prep["X_imputed"], index=prep["row_index"], columns=feat_cols)
+    work["__y"] = y_series
+    work = work.loc[label_mask].copy()
 
     # Filter classes with too few samples for stratified splits
     y_raw = work["__y"].astype(str)
@@ -1353,6 +1389,7 @@ def api_classify_train():
     iters = []
     train_err = []
     val_err = []
+    test_err = []
     best_val = float("inf")
     best_iter = 0
     no_improve = 0
@@ -1362,11 +1399,14 @@ def api_classify_train():
         iters.append(int(i))
         pred_tr = model.predict(X_tr)
         pred_val = model.predict(X_val)
+        pred_test = model.predict(X_test)
         tr_err = 1.0 - float(accuracy_score(y_tr, pred_tr))
         vl_err = 1.0 - float(accuracy_score(y_val, pred_val))
+        te_err = 1.0 - float(accuracy_score(y_test, pred_test))
         train_err.append(tr_err)
         val_err.append(vl_err)
-        return tr_err, vl_err
+        test_err.append(te_err)
+        return tr_err, vl_err, te_err
 
     if clf_name == "svm":
         clf = SGDClassifier(loss="hinge", random_state=random_state)
@@ -1374,7 +1414,7 @@ def api_classify_train():
         clf.partial_fit(X_tr[:1], y_tr[:1], classes=np.arange(n_classes))  # initialize
         for i in range(1, max_iters + 1):
             clf.partial_fit(X_tr, y_tr)
-            _, vl = record(i, clf)
+            _, vl, _ = record(i, clf)
             if vl + 1e-9 < best_val:
                 best_val = vl
                 best_iter = i
@@ -1395,7 +1435,7 @@ def api_classify_train():
         clf.partial_fit(X_tr[:1], y_tr[:1], classes=np.arange(n_classes))
         for i in range(1, max_iters + 1):
             clf.partial_fit(X_tr, y_tr)
-            _, vl = record(i, clf)
+            _, vl, _ = record(i, clf)
             if vl + 1e-9 < best_val:
                 best_val = vl
                 best_iter = i
@@ -1422,7 +1462,7 @@ def api_classify_train():
         )
         for i in range(1, max_iters + 1):
             clf.fit(X_tr, y_tr)
-            _, vl = record(i, clf)
+            _, vl, _ = record(i, clf)
             if vl + 1e-9 < best_val:
                 best_val = vl
                 best_iter = i
@@ -1454,7 +1494,7 @@ def api_classify_train():
             n_estimators += step
             clf.set_params(n_estimators=n_estimators)
             clf.fit(X_tr, y_tr)
-            _, vl = record(i, clf)
+            _, vl, _ = record(i, clf)
             if vl + 1e-9 < best_val:
                 best_val = vl
                 best_iter = i
@@ -1485,12 +1525,17 @@ def api_classify_train():
             "classes": [str(c) for c in classes_],
             "label": str(label_col),
             "features": [str(c) for c in feat_cols],
+            "n_rows": int(work.shape[0]),
+            "n_features": int(len(feat_cols)),
+            "n_train": int(len(train_idx)),
+            "n_test": int(len(test_idx)),
             "min_required_per_class": int(min_required),
             "excluded_labels": excluded_labels,
             "history": {
                 "iter": iters,
                 "train_error": train_err,
                 "val_error": val_err,
+                "test_error": test_err,
             },
             "best_iteration": int(best_iter),
             "test_accuracy": test_acc,
@@ -1561,22 +1606,12 @@ def api_dimred():
     import numpy as np
     import pandas as pd
 
-    # Build numeric feature matrix, excluding common ID-like columns
-    num_df = df.select_dtypes(include=["number"]).copy()
-    drop_names = {"segmentID", "segment_ID"}
-    feat_cols = [c for c in num_df.columns if str(c) not in drop_names]
-    num_df = num_df[feat_cols]
-    if num_df.shape[1] < 1:
-        return jsonify({"error": "no_numeric_columns"}), 400
-
-    # Row mask: drop rows with any NaNs in features
-    clean = num_df.dropna(axis=0, how="any")
-    if clean.shape[0] < 2:
-        return jsonify({"error": "not_enough_rows", "rows": int(clean.shape[0])}), 400
+    prep, error = _prepare_pca_numeric_frame(df)
+    if error is not None:
+        return jsonify(error), 400
 
     # Keep parallel slices for IDs and optional color column
-    # Reindex original df to the cleaned index to align rows
-    idx = clean.index
+    idx = prep["row_index"]
     id_source = None
     for cname in ("segmentID", "cell_name"):
         if cname in df.columns:
@@ -1593,15 +1628,9 @@ def api_dimred():
     else:
         color_series = None
 
-    # Standardize features to z-scores; drop constant features
-    X = clean.to_numpy(dtype=float)
-    X = X - np.nanmean(X, axis=0, keepdims=True)
-    sd = X.std(axis=0, ddof=1)
-    keep_mask = np.isfinite(sd) & (sd > 0)
-    if not np.any(keep_mask):
-        return jsonify({"error": "no_variable_features"}), 400
-    Xz = X[:, keep_mask] / sd[keep_mask]
-    cols_kept = [str(c) for c, k in zip(clean.columns, keep_mask) if bool(k)]
+    # Standardized features with missing values imputed per column mean
+    Xz = prep["Xz"]
+    cols_kept = prep["columns"]
 
     # Optional PCA preprocessing
     if mode == "pcs":

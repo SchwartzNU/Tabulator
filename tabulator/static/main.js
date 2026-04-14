@@ -708,6 +708,11 @@
 
     let traces = [];
     const is3d = Array.isArray(zs);
+    function meanOf(values) {
+      const finite = values.filter(v => typeof v === 'number' && isFinite(v));
+      if (!finite.length) return null;
+      return finite.reduce((sum, value) => sum + value, 0) / finite.length;
+    }
     if (!colors) {
       const text = ids.map((id, i) => `${id || ''}${id ? ', ' : ''}(${xs[i]}, ${ys[i]}${is3d ? ', ' + zs[i] : ''})`);
       const base = {
@@ -741,17 +746,48 @@
         const x = idxs.map(i => xs[i]);
         const y = idxs.map(i => ys[i]);
         const z = is3d ? idxs.map(i => zs[i]) : null;
+        const color = palette[j % palette.length];
         const text = idxs.map(i => {
           const id = ids[i] || '';
           return `${id}${id ? ', ' : ''}${colorCol}: ${name}\n(${xs[i]}, ${ys[i]}${is3d ? ', ' + zs[i] : ''})`;
         });
         traces.push(is3d ? {
           type: 'scatter3d', mode: 'markers', name: String(name), legendgroup: String(name), x, y, z,
-          marker: { color: palette[j % palette.length], size: 3, opacity: 0.9 }, text,
+          marker: { color, size: 3, opacity: 0.9 }, text,
           hovertemplate: '%{text}<extra></extra>'
         } : {
           type: 'scattergl', mode: 'markers', name: String(name), legendgroup: String(name), x, y,
-          marker: { color: palette[j % palette.length], size: 6, opacity: 0.9 }, text,
+          marker: { color, size: 6, opacity: 0.9 }, text,
+          hovertemplate: '%{text}<extra></extra>'
+        });
+
+        const meanX = meanOf(x);
+        const meanY = meanOf(y);
+        const meanZ = is3d ? meanOf(z || []) : null;
+        if (meanX == null || meanY == null || (is3d && meanZ == null)) return;
+        const meanText = `${colorCol}: ${name} mean\n(${meanX}, ${meanY}${is3d ? ', ' + meanZ : ''})`;
+        traces.push(is3d ? {
+          type: 'scatter3d',
+          mode: 'markers',
+          name: `${String(name)} mean`,
+          legendgroup: String(name),
+          showlegend: false,
+          x: [meanX],
+          y: [meanY],
+          z: [meanZ],
+          marker: { color, size: 8, opacity: 1, line: { color: '#111827', width: 4 } },
+          text: [meanText],
+          hovertemplate: '%{text}<extra></extra>'
+        } : {
+          type: 'scatter',
+          mode: 'markers',
+          name: `${String(name)} mean`,
+          legendgroup: String(name),
+          showlegend: false,
+          x: [meanX],
+          y: [meanY],
+          marker: { color, symbol: 'x', size: 11, line: { color: '#111827', width: 1 } },
+          text: [meanText],
           hovertemplate: '%{text}<extra></extra>'
         });
       });
@@ -1044,7 +1080,16 @@
         const ran = Array.isArray(data?.history?.iter) ? data.history.iter.length : null;
         const early = !!data.stopped_early;
         const runNote = early ? `Stopped early at ${ran} iters` : (ran ? `Ran ${ran} iters` : '');
-        metricsDiv.textContent = `Classifier: ${data.classifier} · Best iter: ${bestIt} · Test accuracy: ${acc}%` + (runNote ? ` · ${runNote}` : '');
+        const nRows = Number.isFinite(data?.n_rows) ? data.n_rows : null;
+        const nFeatures = Number.isFinite(data?.n_features) ? data.n_features : null;
+        const nTrain = Number.isFinite(data?.n_train) ? data.n_train : null;
+        const nTest = Number.isFinite(data?.n_test) ? data.n_test : null;
+        metricsDiv.textContent =
+          `Classifier: ${data.classifier} · Best iter: ${bestIt} · Test accuracy: ${acc}%` +
+          (nRows !== null ? ` · Rows: ${nRows}` : '') +
+          (nFeatures !== null ? ` · Features: ${nFeatures}` : '') +
+          (nTrain !== null && nTest !== null ? ` · Train/Test: ${nTrain}/${nTest}` : '') +
+          (runNote ? ` · ${runNote}` : '');
         if (Array.isArray(data.confusion_matrix) && Array.isArray(data.classes)) {
           renderConfusion(confDiv, data.confusion_matrix, data.classes);
         }
@@ -1062,10 +1107,14 @@
     const it = Array.isArray(history?.iter) ? history.iter : [];
     const tr = Array.isArray(history?.train_error) ? history.train_error : [];
     const vl = Array.isArray(history?.val_error) ? history.val_error : [];
+    const te = Array.isArray(history?.test_error) ? history.test_error : [];
     const traces = [
       { type: 'scatter', mode: 'lines+markers', name: 'Train error', x: it, y: tr, line: { color: '#60a5fa' }, marker: { size: 6 } },
       { type: 'scatter', mode: 'lines+markers', name: 'Validation error', x: it, y: vl, line: { color: '#ef4444' }, marker: { size: 6 } }
     ];
+    if (te.length) {
+      traces.push({ type: 'scatter', mode: 'lines+markers', name: 'Test error', x: it, y: te, line: { color: '#f59e0b' }, marker: { size: 6 } });
+    }
     // Add random-chance baseline error = 1 - 1/num_classes
     const nC = Array.isArray(classes) ? classes.length : null;
     if (typeof nC === 'number' && nC > 1) {
