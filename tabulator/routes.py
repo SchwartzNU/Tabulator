@@ -205,23 +205,33 @@ def _ensure_clean_session():
 
 def _get_dataset_from_request():
     """Return (dataset, dataset_id) from query param or session."""
-    dataset_id = request.args.get("dataset_id") or session.get("dataset_id")
-    ds = _resolve_dataset(dataset_id) if dataset_id else None
-    return ds, dataset_id
+    requested_dataset_id = request.args.get("dataset_id")
+    session_dataset_id = session.get("dataset_id")
+    candidates = []
+    for candidate in (requested_dataset_id, session_dataset_id):
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+    if not candidates:
+        ds = _resolve_dataset(None)
+        return ds, session_dataset_id
+    for candidate in candidates:
+        ds = _resolve_dataset(candidate)
+        if ds is not None:
+            return ds, candidate
+    return None, requested_dataset_id or session_dataset_id
 
 
 def _resolve_dataset(dataset_id):
-    if not dataset_id:
-        return None
-    ds = store.get(dataset_id)
-    if ds is not None:
-        return ds
+    if dataset_id:
+        ds = store.get(dataset_id)
+        if ds is not None:
+            return ds
 
     session_dataset_id = session.get("dataset_id")
     dataset_source = session.get("dataset_source")
     dataset_file_path = session.get("dataset_file_path")
     if (
-        dataset_id == session_dataset_id
+        session_dataset_id
         and dataset_source == "upload"
         and dataset_file_path
         and os.path.exists(dataset_file_path)
@@ -230,8 +240,10 @@ def _resolve_dataset(dataset_id):
             ds = load_dataset(dataset_file_path)
         except LoadError:
             return None
+        cache_key = dataset_id or session_dataset_id
         try:
-            store.put(ds, key=dataset_id)
+            if cache_key:
+                store.put(ds, key=cache_key)
         except Exception:
             pass
         return ds

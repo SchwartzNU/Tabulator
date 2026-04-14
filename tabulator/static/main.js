@@ -7,9 +7,12 @@
     }
   }
 
-  const datasetId = document.body?.dataset?.datasetId || '';
+  function currentDatasetId() {
+    return document.body?.dataset?.datasetId || '';
+  }
 
   function withDatasetId(url) {
+    const datasetId = currentDatasetId();
     if (!datasetId) return url;
     try {
       const u = new URL(url, window.location.origin);
@@ -365,6 +368,7 @@
       try {
         const body = await res.json();
         if (body && body.error) detail = ` (${body.error})`;
+        if (body && body.detail) detail += `: ${body.detail}`;
       } catch {}
       throw new Error(`Request failed: ${res.status}${detail}`);
     }
