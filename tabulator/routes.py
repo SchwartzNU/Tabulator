@@ -250,6 +250,22 @@ def _resolve_dataset(dataset_id):
     return None
 
 
+def _no_dataset_response():
+    requested_dataset_id = request.args.get("dataset_id")
+    session_dataset_id = session.get("dataset_id")
+    dataset_source = session.get("dataset_source")
+    dataset_file_path = session.get("dataset_file_path")
+    file_exists = bool(dataset_file_path and os.path.exists(dataset_file_path))
+    detail = (
+        f"requested_dataset_id={requested_dataset_id!r}, "
+        f"session_dataset_id={session_dataset_id!r}, "
+        f"dataset_source={dataset_source!r}, "
+        f"dataset_file_path_set={bool(dataset_file_path)}, "
+        f"dataset_file_exists={file_exists}"
+    )
+    return jsonify({"error": "no_dataset", "detail": detail}), 404
+
+
 def _allowed_file(filename: str) -> bool:
     allowed = current_app.config.get("ALLOWED_EXTENSIONS", set())
     return "." in filename and filename.rsplit(".", 1)[1].lower() in allowed
@@ -1027,7 +1043,7 @@ def api_db_queries():
 def api_columns():
     ds, dataset_id = _get_dataset_from_request()
     if ds is None:
-        return jsonify({"error": "no_dataset"}), 404
+        return _no_dataset_response()
     df = ds.df
     cols = []
     try:
@@ -1061,7 +1077,7 @@ def api_column_values():
         return jsonify({"error": "missing_column"}), 400
     ds, dataset_id = _get_dataset_from_request()
     if ds is None:
-        return jsonify({"error": "no_dataset"}), 404
+        return _no_dataset_response()
     df = ds.df
     if column not in df.columns:
         return jsonify({"error": "bad_column"}), 400
@@ -1134,7 +1150,7 @@ def api_pca():
     """
     ds, dataset_id = _get_dataset_from_request()
     if ds is None:
-        return jsonify({"error": "no_dataset"}), 404
+        return _no_dataset_response()
     df = ds.df
 
     try:
@@ -1194,7 +1210,7 @@ def api_pca_scores():
 
     ds, dataset_id = _get_dataset_from_request()
     if ds is None:
-        return jsonify({"error": "no_dataset"}), 404
+        return _no_dataset_response()
     df = ds.df
 
     import numpy as np
@@ -1324,7 +1340,7 @@ def api_classify_train():
 
     ds, dataset_id = _get_dataset_from_request()
     if ds is None:
-        return jsonify({"error": "no_dataset"}), 404
+        return _no_dataset_response()
 
     df = ds.df
     if label_col not in df.columns:
@@ -1644,7 +1660,7 @@ def api_dimred():
 
     ds, dataset_id = _get_dataset_from_request()
     if ds is None:
-        return jsonify({"error": "no_dataset"}), 404
+        return _no_dataset_response()
     df = ds.df
 
     import numpy as np
@@ -2023,7 +2039,7 @@ def api_plot_bar():
 
     ds, dataset_id = _get_dataset_from_request()
     if ds is None:
-        return jsonify({"error": "no_dataset"}), 404
+        return _no_dataset_response()
     try:
         payload = _build_bar_plot_payload(ds, value, group, filter_cols, filter_vals, filter_ops)
     except LoadError as exc:
@@ -2046,7 +2062,7 @@ def api_plot_bar_test():
 
     ds, dataset_id = _get_dataset_from_request()
     if ds is None:
-        return jsonify({"error": "no_dataset"}), 404
+        return _no_dataset_response()
     try:
         payload = _build_bar_plot_payload(ds, value, group, filter_cols, filter_vals, filter_ops)
     except LoadError as exc:
@@ -2101,7 +2117,7 @@ def api_plot_scatter():
 
     ds, dataset_id = _get_dataset_from_request()
     if ds is None:
-        return jsonify({"error": "no_dataset"}), 404
+        return _no_dataset_response()
     df = ds.df
     if x not in df.columns or y not in df.columns:
         return jsonify({"error": "bad_columns"}), 400
@@ -2231,7 +2247,7 @@ def api_plot_line_by_row():
 
     ds, dataset_id = _get_dataset_from_request()
     if ds is None:
-        return jsonify({"error": "no_dataset"}), 404
+        return _no_dataset_response()
     df = ds.df
     if x not in df.columns or y not in df.columns:
         return jsonify({"error": "bad_columns"}), 400
