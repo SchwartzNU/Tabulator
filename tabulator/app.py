@@ -2,6 +2,7 @@ import os
 from flask import Flask
 from asgiref.wsgi import WsgiToAsgi
 from .config import BaseConfig, LocalDevConfig, ProductionConfig
+from .data_store import store
 
 
 def create_flask_app() -> Flask:
@@ -19,6 +20,8 @@ def create_flask_app() -> Flask:
     # Ensure upload directory exists
     os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
     os.makedirs(app.instance_path, exist_ok=True)
+    os.makedirs(app.config["DATASET_STORE_DIR"], exist_ok=True)
+    store.configure(app.config["DATASET_STORE_DIR"])
 
     # Register blueprints
     from .routes import bp as main_bp

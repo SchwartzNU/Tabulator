@@ -3,6 +3,7 @@ import os
 
 BASE_DIR = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
 DEFAULT_UPLOADS_PATH = os.path.join(BASE_DIR, "uploads")
+DEFAULT_DATASET_STORE_PATH = os.path.join(BASE_DIR, "instance", "dataset_store")
 
 
 class BaseConfig:
@@ -11,6 +12,7 @@ class BaseConfig:
         os.getenv("MAX_CONTENT_LENGTH", 100 * 1024 * 1024)
     )  # 100 MB
     UPLOAD_FOLDER = os.getenv("UPLOAD_FOLDER", DEFAULT_UPLOADS_PATH)
+    DATASET_STORE_DIR = os.getenv("DATASET_STORE_DIR", DEFAULT_DATASET_STORE_PATH)
     ALLOWED_EXTENSIONS = {"csv", "h5", "pkl", "pickle", "mat"}
 
 
