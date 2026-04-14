@@ -200,13 +200,42 @@ def _ensure_clean_session():
         session.pop("dataset_id", None)
         session.pop("dataset_label", None)
         session.pop("dataset_source", None)
+        session.pop("dataset_file_path", None)
 
 
 def _get_dataset_from_request():
     """Return (dataset, dataset_id) from query param or session."""
     dataset_id = request.args.get("dataset_id") or session.get("dataset_id")
-    ds = store.get(dataset_id) if dataset_id else None
+    ds = _resolve_dataset(dataset_id) if dataset_id else None
     return ds, dataset_id
+
+
+def _resolve_dataset(dataset_id):
+    if not dataset_id:
+        return None
+    ds = store.get(dataset_id)
+    if ds is not None:
+        return ds
+
+    session_dataset_id = session.get("dataset_id")
+    dataset_source = session.get("dataset_source")
+    dataset_file_path = session.get("dataset_file_path")
+    if (
+        dataset_id == session_dataset_id
+        and dataset_source == "upload"
+        and dataset_file_path
+        and os.path.exists(dataset_file_path)
+    ):
+        try:
+            ds = load_dataset(dataset_file_path)
+        except LoadError:
+            return None
+        try:
+            store.put(ds, key=dataset_id)
+        except Exception:
+            pass
+        return ds
+    return None
 
 
 def _allowed_file(filename: str) -> bool:
@@ -769,12 +798,13 @@ def index():
     dataset_id = session.get("dataset_id")
     dataset_label = session.get("dataset_label")
     dataset_source = session.get("dataset_source")
-    ds = store.get(dataset_id) if dataset_id else None
+    ds = _resolve_dataset(dataset_id) if dataset_id else None
     if dataset_id and ds is None:
         # Clear stale session references if the in-memory dataset was lost (e.g., after app reload)
         session.pop("dataset_id", None)
         session.pop("dataset_label", None)
         session.pop("dataset_source", None)
+        session.pop("dataset_file_path", None)
         dataset_id = None
         dataset_label = None
         dataset_source = None
@@ -874,6 +904,7 @@ def api_db_load():
     session["dataset_id"] = dataset_id
     session["dataset_label"] = table
     session["dataset_source"] = f"{schema}.{table}"
+    session.pop("dataset_file_path", None)
     note = f"Loaded {table} from {schema}: {ds.df.shape[0]} rows, {ds.df.shape[1]} cols."
     if skipped_blob_cols:
         note += f" Skipped {len(skipped_blob_cols)} blob column(s)."
@@ -896,6 +927,7 @@ def api_clear_dataset():
     dataset_id = session.pop("dataset_id", None)
     session.pop("dataset_label", None)
     session.pop("dataset_source", None)
+    session.pop("dataset_file_path", None)
     removed = False
     if dataset_id:
         removed = store.remove(dataset_id)
@@ -2331,6 +2363,7 @@ def upload():
     session["dataset_id"] = dataset_id
     session["dataset_label"] = filename
     session["dataset_source"] = "upload"
+    session["dataset_file_path"] = dest_path
     msg = f"Loaded {filename}: {ds.df.shape[0]} rows, {ds.df.shape[1]} cols"
     flash(msg)
     return redirect(url_for("main.index", _anchor="preview"))

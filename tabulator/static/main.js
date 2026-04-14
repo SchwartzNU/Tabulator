@@ -1154,7 +1154,7 @@
       const meta = await fetchJSON('/api/columns');
       cols = meta.columns || [];
     } catch (e) {
-      configEl.innerHTML = '<div style="color: var(--muted);">No dataset loaded.</div>';
+      configEl.innerHTML = `<div style="color: var(--muted); white-space: pre-wrap;">${String(e)}</div>`;
       previewEl.innerHTML = '';
       return;
     }
@@ -1461,7 +1461,7 @@
       const meta = await fetchJSON('/api/columns');
       cols = meta.columns || [];
     } catch (e) {
-      configEl.innerHTML = '<div style="color: var(--muted);">No dataset loaded.</div>';
+      configEl.innerHTML = `<div style="color: var(--muted); white-space: pre-wrap;">${String(e)}</div>`;
       previewEl.innerHTML = '';
       return;
     }
@@ -2270,7 +2270,7 @@
       const meta = await fetchJSON('/api/columns');
       cols = meta.columns || [];
     } catch (e) {
-      configEl.innerHTML = '<div style="color: var(--muted);">No dataset loaded.</div>';
+      configEl.innerHTML = `<div style="color: var(--muted); white-space: pre-wrap;">${String(e)}</div>`;
       previewEl.innerHTML = '';
       return;
     }

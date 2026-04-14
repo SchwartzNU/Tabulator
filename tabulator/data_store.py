@@ -27,8 +27,8 @@ class DataStore:
     def root_dir(self) -> str:
         return self._root_dir
 
-    def put(self, obj: Any) -> str:
-        key = uuid.uuid4().hex
+    def put(self, obj: Any, key: Optional[str] = None) -> str:
+        key = key or uuid.uuid4().hex
         path = self._path_for(key)
         tmp_path = self._tmp_path_for(key)
         try:
